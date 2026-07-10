@@ -35,6 +35,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
   });
 
   const createdQuoteIds: string[] = [];
+  const skipReasons: string[] = [];
 
   for (const customerId of customerIds) {
     const customer = await prisma.customer.findUniqueOrThrow({ where: { id: customerId } });
@@ -51,12 +52,16 @@ export async function createQuotes(formData: FormData): Promise<void> {
       const result = await priceLineForCustomer(line, customer, incoterm, currency, marginPercent);
       if (result.breakdown) {
         priced.push({ line, breakdown: result.breakdown });
+      } else {
+        // Lines that fail validation (missing FOB, missing weight, missing
+        // freight rate, incoterm not offered on this route, etc.) are
+        // skipped from this quote per the spec's hard-blocker rules
+        // (section 19) - the reason is collected so the user gets a
+        // specific error instead of a generic "something went wrong".
+        for (const issue of result.issues) {
+          skipReasons.push(`${customer.companyName}: ${issue.message}`);
+        }
       }
-      // Lines that fail validation (missing FOB, missing weight, missing
-      // freight rate, etc.) are silently skipped from this quote per the
-      // spec's hard-blocker rules (section 19) - the user sees fewer lines
-      // on the resulting quote than they selected and can fix the offer
-      // data and try again.
     }
 
     if (priced.length === 0) continue;
@@ -89,8 +94,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
             stemsPerBox: line.stemsPerBox!,
             freightRatePerKg: null,
             freightPerStem: breakdown.freightPerStem.toString(),
-            clearingPerStem: breakdown.clearingPerStem.toString(),
-            inspectionPerStem: breakdown.inspectionPerStem.toString(),
+            clearingAndInspectionPerStem: breakdown.clearingAndInspectionPerStem.toString(),
             handlingPerBox: null,
             handlingPerStem: breakdown.handlingPerStem.toString(),
             costPricePerStemSource: breakdown.totalCostPricePerStemSource.toString(),
@@ -107,9 +111,12 @@ export async function createQuotes(formData: FormData): Promise<void> {
   }
 
   if (createdQuoteIds.length === 0) {
-    throw new Error(
-      "Geen offerteregels konden worden berekend - controleer of FOB-prijs, gewicht, vrachttarief en wisselkoers aanwezig zijn.",
-    );
+    const uniqueReasons = [...new Set(skipReasons)].slice(0, 5);
+    const detail =
+      uniqueReasons.length > 0
+        ? uniqueReasons.join("; ")
+        : "controleer of FOB-prijs, gewicht, vrachttarief en wisselkoers aanwezig zijn";
+    throw new Error(`Geen offerteregels konden worden berekend - ${detail}.`);
   }
 
   if (createdQuoteIds.length === 1) {

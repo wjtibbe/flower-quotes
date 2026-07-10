@@ -50,8 +50,7 @@ describe("calculatePriceLine - DDP with currency conversion", () => {
       freightRatePerKg: 3.1,
       stemsPerBox: 40,
       ddp: {
-        clearingPerStem: 0.02,
-        inspectionPerStem: 0.01,
+        clearingAndInspectionPerStem: 0.03,
         handlingPerBox: 2.0,
       },
       sourceCurrency: "USD",
@@ -65,7 +64,7 @@ describe("calculatePriceLine - DDP with currency conversion", () => {
     expect(result.freightPerStem.toString()).toBe("0.50375");
     // handling = 2.00/40 = 0.05
     expect(result.handlingPerStem.toString()).toBe("0.05");
-    // cost (USD) = 0.45 + 0.50375 + 0.02 + 0.01 + 0.05 = 1.03375
+    // cost (USD) = 0.45 + 0.50375 + 0.03 + 0.05 = 1.03375
     expect(result.totalCostPricePerStemSource.toString()).toBe("1.03375");
     // cost (EUR) = 1.03375 * 0.92 = 0.95105
     expect(result.costPricePerStemTarget.toString()).toBe("0.95105");
@@ -115,7 +114,7 @@ describe("calculatePriceLine - missing data / validation blockers", () => {
     weightPerBoxKg: 6.5,
     freightRatePerKg: 3.1,
     stemsPerBox: 40,
-    ddp: { clearingPerStem: 0.02, inspectionPerStem: 0.01, handlingPerBox: 2.0 },
+    ddp: { clearingAndInspectionPerStem: 0.03, handlingPerBox: 2.0 },
     sourceCurrency: "USD",
     targetCurrency: "USD",
     marginPercent: 20,
@@ -140,7 +139,7 @@ describe("calculatePriceLine - missing data / validation blockers", () => {
     expect(() => calculatePriceLine(input)).toThrow(PricingError);
   });
 
-  it("throws when DDP clearing/inspection/handling are missing", () => {
+  it("throws when DDP clearing&inspection/handling are missing", () => {
     expect(() => calculatePriceLine({ ...base, ddp: {} })).toThrow(PricingError);
   });
 

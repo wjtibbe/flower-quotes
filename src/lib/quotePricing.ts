@@ -15,9 +15,10 @@ export interface ResolvedPricingContext {
   originId: string | null;
   destinationId: string | null;
   routeId: string | null;
+  routeSupportsIncoterm: boolean; // false if the route exists but doesn't offer this incoterm
   freightRatePerKg: string | null;
   freightRateUpdatedAt: Date | null;
-  ddp: { clearingPerStem: string | null; inspectionPerStem: string | null; handlingPerBox: string | null };
+  ddp: { clearingAndInspectionPerStem: string | null; handlingPerBox: string | null };
   exchangeRate: ExchangeRateSnapshot | null;
 }
 
@@ -38,11 +39,11 @@ export async function resolvePricingContext(
   const destinationId = customer.destinationId;
 
   let routeId: string | null = null;
+  let routeSupportsIncoterm = true;
   let freightRatePerKg: string | null = null;
   let freightRateUpdatedAt: Date | null = null;
   const ddp: ResolvedPricingContext["ddp"] = {
-    clearingPerStem: null,
-    inspectionPerStem: null,
+    clearingAndInspectionPerStem: null,
     handlingPerBox: null,
   };
 
@@ -50,6 +51,8 @@ export async function resolvePricingContext(
     const route = await prisma.route.findUnique({ where: { originId_destinationId: { originId, destinationId } } });
     if (route) {
       routeId = route.id;
+      if (incoterm === "CFR" && !route.supportsCfr) routeSupportsIncoterm = false;
+      if (incoterm === "DDP" && !route.supportsDdp) routeSupportsIncoterm = false;
 
       if (incoterm === "CFR" || incoterm === "DDP") {
         const rate = await prisma.freightRate.findFirst({
@@ -65,8 +68,9 @@ export async function resolvePricingContext(
       if (incoterm === "DDP") {
         const rates = await prisma.ddpCostRate.findMany({ where: { routeId: route.id, active: true } });
         for (const r of rates) {
-          if (r.costType === ("CLEARING_PER_STEM" as DdpCostType)) ddp.clearingPerStem = r.amount.toString();
-          if (r.costType === ("INSPECTION_PER_STEM" as DdpCostType)) ddp.inspectionPerStem = r.amount.toString();
+          if (r.costType === ("CLEARING_AND_INSPECTION_PER_STEM" as DdpCostType)) {
+            ddp.clearingAndInspectionPerStem = r.amount.toString();
+          }
           if (r.costType === ("HANDLING_PER_BOX" as DdpCostType)) ddp.handlingPerBox = r.amount.toString();
         }
       }
@@ -81,7 +85,16 @@ export async function resolvePricingContext(
     }
   }
 
-  return { originId, destinationId, routeId, freightRatePerKg, freightRateUpdatedAt, ddp, exchangeRate };
+  return {
+    originId,
+    destinationId,
+    routeId,
+    routeSupportsIncoterm,
+    freightRatePerKg,
+    freightRateUpdatedAt,
+    ddp,
+    exchangeRate,
+  };
 }
 
 async function findExchangeRate(from: CurrencyCode, to: CurrencyCode) {
@@ -112,6 +125,19 @@ export async function priceLineForCustomer(
 ): Promise<LinePricingResult> {
   const context = await resolvePricingContext(line, customer, incoterm);
 
+  if (!context.routeSupportsIncoterm) {
+    return {
+      issues: [
+        {
+          code: "INCOTERM_NOT_SUPPORTED_ON_ROUTE",
+          message: `${incoterm} wordt niet aangeboden op deze route`,
+        },
+      ],
+      breakdown: null,
+      context,
+    };
+  }
+
   const input = {
     incoterm,
     fobPricePerStem: line.fobPricePerStem?.toString() ?? undefined,
@@ -122,8 +148,7 @@ export async function priceLineForCustomer(
     weightPerBoxKg: line.weightPerBoxKg?.toString() ?? undefined,
     freightRatePerKg: context.freightRatePerKg ?? undefined,
     ddp: {
-      clearingPerStem: context.ddp.clearingPerStem ?? undefined,
-      inspectionPerStem: context.ddp.inspectionPerStem ?? undefined,
+      clearingAndInspectionPerStem: context.ddp.clearingAndInspectionPerStem ?? undefined,
       handlingPerBox: context.ddp.handlingPerBox ?? undefined,
     },
     exchangeRate: context.exchangeRate ?? undefined,

@@ -99,6 +99,13 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
   await upsertRoute(quito.id, doha.id);
   await upsertRoute(bogota.id, dubai.id);
 
+  // Only the Amsterdam routes have DDP cost rates configured below, so only
+  // those actually offer DDP - reflect that on the routes themselves.
+  await prisma.route.updateMany({
+    where: { id: { in: [quitoDubai.id, bogotaDoha.id] } },
+    data: { supportsDdp: false },
+  });
+
   // Freight rates - intentionally left unrated for Quito->Doha and
   // Bogota->Dubai so the dashboard's "missing freight rate" warning has
   // something real to show.
@@ -115,8 +122,7 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
   for (const route of [quitoAmsterdam, bogotaAmsterdam]) {
     await prisma.ddpCostRate.createMany({
       data: [
-        { routeId: route.id, costType: DdpCostType.CLEARING_PER_STEM, currency: "USD", amount: "0.0150" },
-        { routeId: route.id, costType: DdpCostType.INSPECTION_PER_STEM, currency: "USD", amount: "0.0100" },
+        { routeId: route.id, costType: DdpCostType.CLEARING_AND_INSPECTION_PER_STEM, currency: "USD", amount: "0.0250" },
         { routeId: route.id, costType: DdpCostType.HANDLING_PER_BOX, currency: "USD", amount: "1.5000" },
       ],
     });

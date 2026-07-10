@@ -1,0 +1,6 @@
+-- AlterEnum
+ALTER TYPE "DdpCostType" ADD VALUE 'CLEARING_AND_INSPECTION_PER_STEM';
+
+-- AlterTable
+ALTER TABLE "Route" ADD COLUMN     "supportsCfr" BOOLEAN NOT NULL DEFAULT true,
+ADD COLUMN     "supportsDdp" BOOLEAN NOT NULL DEFAULT true;

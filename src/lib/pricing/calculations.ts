@@ -50,22 +50,18 @@ export function cfrCostPricePerStem(
 }
 
 /**
- * DDP cost price per stem = FOB + freight + clearing + inspection + handling
+ * DDP cost price per stem = FOB + freight + clearing&inspection + handling
  * (all already expressed per stem).
  */
 export function ddpCostPricePerStem(
   fobPricePerStem: Decimal.Value,
   freightPerStemValue: Decimal.Value,
-  ddp: Required<Pick<DdpCostInputs, "clearingPerStem" | "inspectionPerStem">>,
+  ddp: Required<Pick<DdpCostInputs, "clearingAndInspectionPerStem">>,
 ): Decimal {
-  const clearing = toMoney(ddp.clearingPerStem);
-  const inspection = toMoney(ddp.inspectionPerStem);
-  assertNonNegative(clearing, "NEGATIVE_PRICE", "clearingPerStem");
-  assertNonNegative(inspection, "NEGATIVE_PRICE", "inspectionPerStem");
+  const clearingAndInspection = toMoney(ddp.clearingAndInspectionPerStem);
+  assertNonNegative(clearingAndInspection, "NEGATIVE_PRICE", "clearingAndInspectionPerStem");
 
-  return cfrCostPricePerStem(fobPricePerStem, freightPerStemValue)
-    .plus(clearing)
-    .plus(inspection);
+  return cfrCostPricePerStem(fobPricePerStem, freightPerStemValue).plus(clearingAndInspection);
 }
 
 /** Dispatch cost-price calculation based on incoterm. */
@@ -73,8 +69,7 @@ export function costPricePerStemForIncoterm(params: {
   incoterm: Incoterm;
   fobPricePerStem: Decimal.Value;
   freightPerStemValue?: Decimal.Value;
-  clearingPerStem?: Decimal.Value;
-  inspectionPerStem?: Decimal.Value;
+  clearingAndInspectionPerStem?: Decimal.Value;
   handlingPerStemValue?: Decimal.Value;
 }): Decimal {
   const { incoterm, fobPricePerStem } = params;
@@ -92,19 +87,18 @@ export function costPricePerStemForIncoterm(params: {
   }
 
   // DDP
-  if (params.clearingPerStem === undefined) {
-    throw new PricingError("MISSING_DDP_CLEARING", "Clearing per stem is required for DDP");
-  }
-  if (params.inspectionPerStem === undefined) {
-    throw new PricingError("MISSING_DDP_INSPECTION", "Inspection per stem is required for DDP");
+  if (params.clearingAndInspectionPerStem === undefined) {
+    throw new PricingError(
+      "MISSING_DDP_CLEARING_INSPECTION",
+      "Clearing & inspection per stem is required for DDP",
+    );
   }
   if (params.handlingPerStemValue === undefined) {
     throw new PricingError("MISSING_DDP_HANDLING", "Handling per stem is required for DDP");
   }
 
   return ddpCostPricePerStem(fobPricePerStem, params.freightPerStemValue, {
-    clearingPerStem: params.clearingPerStem,
-    inspectionPerStem: params.inspectionPerStem,
+    clearingAndInspectionPerStem: params.clearingAndInspectionPerStem,
   }).plus(toMoney(params.handlingPerStemValue));
 }
 

@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
-import { createRoute, setFreightRate } from "./actions";
+import { createRoute, setFreightRate, toggleRouteSupportsCfr, toggleRouteSupportsDdp } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -24,6 +24,7 @@ export default async function RoutesPage() {
         <h1 className="text-2xl font-semibold text-gray-900">Routes & vrachttarieven</h1>
         <p className="text-sm text-gray-500 mt-1">
           Eén vrachttarief per route. Een nieuwe waarde vervangt direct de vorige - geen historie of einddatums.
+          FOB kan altijd; zet C&amp;F en/of DDP per route aan of uit als die niet worden aangeboden.
         </p>
       </div>
 
@@ -31,7 +32,7 @@ export default async function RoutesPage() {
         {routes.map((route) => {
           const current = route.freightRates[0];
           return (
-            <div key={route.id} className="card p-4">
+            <div key={route.id} className="card p-4 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="font-medium text-gray-900">
                   {route.origin.city} → {route.destination.city}
@@ -66,6 +67,20 @@ export default async function RoutesPage() {
                     <input name="notes" defaultValue={current?.notes ?? ""} className="input py-1 px-2 text-xs w-40" />
                   </div>
                   <button className="btn-primary py-1 px-2 text-xs">{current ? "Wijzigen" : "Instellen"}</button>
+                </form>
+              </div>
+
+              <div className="flex items-center gap-4 pt-2 border-t border-gray-100 text-sm">
+                <span className="badge bg-gray-100 text-gray-700">FOB altijd beschikbaar</span>
+                <form action={toggleRouteSupportsCfr.bind(null, route.id, route.supportsCfr)}>
+                  <button className={route.supportsCfr ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
+                    C&amp;F: {route.supportsCfr ? "aan" : "uit"}
+                  </button>
+                </form>
+                <form action={toggleRouteSupportsDdp.bind(null, route.id, route.supportsDdp)}>
+                  <button className={route.supportsDdp ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
+                    DDP: {route.supportsDdp ? "aan" : "uit"}
+                  </button>
                 </form>
               </div>
             </div>

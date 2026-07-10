@@ -42,3 +42,16 @@ export async function setFreightRate(routeId: string, formData: FormData): Promi
   }
   revalidatePath("/routes");
 }
+
+/** Toggles whether a route offers C&F, so quotes/pricing know not to offer it otherwise. */
+export async function toggleRouteSupportsCfr(routeId: string, current: boolean): Promise<void> {
+  await prisma.route.update({ where: { id: routeId }, data: { supportsCfr: !current } });
+  revalidatePath("/routes");
+}
+
+/** Toggles whether a route offers DDP, so quotes/pricing and the DDP-costs screen know not to offer it otherwise. */
+export async function toggleRouteSupportsDdp(routeId: string, current: boolean): Promise<void> {
+  await prisma.route.update({ where: { id: routeId }, data: { supportsDdp: !current } });
+  revalidatePath("/routes");
+  revalidatePath("/ddp-costs");
+}

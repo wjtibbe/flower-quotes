@@ -61,8 +61,7 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
               <th>Product</th>
               <th>FOB</th>
               <th>Vracht</th>
-              <th>Clearing</th>
-              <th>Inspection</th>
+              <th>Clearing & Inspection</th>
               <th>Handling</th>
               <th>Kostprijs (bron)</th>
               <th>Kostprijs ({quote.currency})</th>
@@ -88,8 +87,7 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
                   <td>{label}</td>
                   <td>{fmtMoney(line.fobPricePerStem, 4)}</td>
                   <td>{fmtMoney(line.freightPerStem, 4)}</td>
-                  <td>{fmtMoney(line.clearingPerStem, 4)}</td>
-                  <td>{fmtMoney(line.inspectionPerStem, 4)}</td>
+                  <td>{fmtMoney(line.clearingAndInspectionPerStem, 4)}</td>
                   <td>{fmtMoney(line.handlingPerStem, 4)}</td>
                   <td>{fmtMoney(line.costPricePerStemSource, 4)}</td>
                   <td>{fmtMoney(line.costPricePerStemQuote, 4)}</td>

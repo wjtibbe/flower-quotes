@@ -37,11 +37,14 @@ export function validatePriceLineInput(input: PriceLineInput): ValidationIssue[]
   }
 
   if (input.incoterm === "DDP") {
-    if (input.ddp?.clearingPerStem === undefined || input.ddp?.clearingPerStem === null) {
-      issues.push({ code: "MISSING_DDP_CLEARING", message: "Clearing per steel ontbreekt" });
-    }
-    if (input.ddp?.inspectionPerStem === undefined || input.ddp?.inspectionPerStem === null) {
-      issues.push({ code: "MISSING_DDP_INSPECTION", message: "Inspection per steel ontbreekt" });
+    if (
+      input.ddp?.clearingAndInspectionPerStem === undefined ||
+      input.ddp?.clearingAndInspectionPerStem === null
+    ) {
+      issues.push({
+        code: "MISSING_DDP_CLEARING_INSPECTION",
+        message: "Clearing & inspection per steel ontbreekt",
+      });
     }
     if (input.ddp?.handlingPerBox === undefined || input.ddp?.handlingPerBox === null) {
       issues.push({ code: "MISSING_DDP_HANDLING", message: "Handling per doos ontbreekt" });

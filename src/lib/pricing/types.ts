@@ -10,8 +10,9 @@ export interface ExchangeRateSnapshot {
 }
 
 export interface DdpCostInputs {
-  clearingPerStem?: Decimal.Value;
-  inspectionPerStem?: Decimal.Value;
+  // One combined clearing+inspection price per stem (billed as a single
+  // line item, not itemized separately).
+  clearingAndInspectionPerStem?: Decimal.Value;
   handlingPerBox?: Decimal.Value;
 }
 
@@ -45,8 +46,7 @@ export interface PriceLineBreakdown {
   incoterm: Incoterm;
   fobPricePerStem: Decimal;
   freightPerStem: Decimal;
-  clearingPerStem: Decimal;
-  inspectionPerStem: Decimal;
+  clearingAndInspectionPerStem: Decimal;
   handlingPerStem: Decimal;
   totalCostPricePerStemSource: Decimal;
   sourceCurrency: CurrencyCode;
@@ -69,9 +69,9 @@ export type BlockerCode =
   | "MISSING_FREIGHT_RATE"
   | "MISSING_CUSTOMER_CURRENCY"
   | "MISSING_EXCHANGE_RATE"
-  | "MISSING_DDP_CLEARING"
-  | "MISSING_DDP_INSPECTION"
+  | "MISSING_DDP_CLEARING_INSPECTION"
   | "MISSING_DDP_HANDLING"
+  | "INCOTERM_NOT_SUPPORTED_ON_ROUTE"
   | "MISSING_MARGIN"
   | "NEGATIVE_PRICE"
   | "NEGATIVE_WEIGHT"

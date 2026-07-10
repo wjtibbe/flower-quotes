@@ -63,18 +63,17 @@ describe("cfrCostPricePerStem", () => {
 });
 
 describe("ddpCostPricePerStem", () => {
-  it("adds FOB + freight + clearing + inspection (handling applied separately in pipeline)", () => {
+  it("adds FOB + freight + clearing&inspection (handling applied separately in pipeline)", () => {
     const freight = freightPerStem(8, 3.0, 40); // 0.60
     const result = ddpCostPricePerStem(0.45, freight, {
-      clearingPerStem: 0.02,
-      inspectionPerStem: 0.01,
+      clearingAndInspectionPerStem: 0.03,
     });
     expect(result.toString()).toBe("1.08");
   });
 
-  it("rejects negative clearing/inspection", () => {
+  it("rejects a negative clearing&inspection price", () => {
     expect(() =>
-      ddpCostPricePerStem(0.45, 0.6, { clearingPerStem: -0.02, inspectionPerStem: 0.01 }),
+      ddpCostPricePerStem(0.45, 0.6, { clearingAndInspectionPerStem: -0.03 }),
     ).toThrow(PricingError);
   });
 });

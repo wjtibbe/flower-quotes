@@ -190,6 +190,11 @@ model Route {
   id            String   @id @default(uuid())
   originId      String
   destinationId String
+  // Not every route is offered under every incoterm (e.g. a route without a
+  // customs broker relationship might never be quoted DDP). FOB has no
+  // route-level flag - it never depends on freight/DDP data being present.
+  supportsCfr   Boolean  @default(true)
+  supportsDdp   Boolean  @default(true)
   active        Boolean  @default(true)
   createdAt     DateTime @default(now())
 
@@ -218,12 +223,19 @@ model FreightRate {
   @@index([routeId, active])
 }
 
-// DDP cost rates per route: clearing/inspection per stem, handling per box.
-// Modeled as a table of typed line items so new DDP cost types can be added later
-// without a schema migration (see section 11.5 "uitgebreid kunnen worden").
+// DDP cost rates per route: one combined clearing+inspection price per stem,
+// plus handling per box. Modeled as a table of typed line items so new DDP
+// cost types can be added later without a schema migration (see section
+// 11.5 "uitgebreid kunnen worden").
+//
+// CLEARING_PER_STEM and INSPECTION_PER_STEM are legacy values, no longer
+// written by the app (clearing+inspection is now one combined price) - kept
+// in the enum only because Postgres can't cheaply drop enum values that
+// existing rows may reference; do not remove them.
 enum DdpCostType {
   CLEARING_PER_STEM
   INSPECTION_PER_STEM
+  CLEARING_AND_INSPECTION_PER_STEM
   HANDLING_PER_BOX
 }
 
@@ -454,8 +466,12 @@ model QuoteLine {
   stemsPerBox                Int
   freightRatePerKg           Decimal? @db.Decimal(10, 4)
   freightPerStem             Decimal? @db.Decimal(12, 6)
+  // Legacy: clearing and inspection used to be billed as two separate line
+  // items. New quotes only populate clearingAndInspectionPerStem; the two
+  // old columns stay nullable for older quotes' history.
   clearingPerStem            Decimal? @db.Decimal(12, 6)
   inspectionPerStem          Decimal? @db.Decimal(12, 6)
+  clearingAndInspectionPerStem Decimal? @db.Decimal(12, 6)
   handlingPerBox             Decimal? @db.Decimal(12, 6)
   handlingPerStem            Decimal? @db.Decimal(12, 6)
   costPricePerStemSource     Decimal  @db.Decimal(12, 6) // in source currency

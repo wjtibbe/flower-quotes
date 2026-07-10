@@ -38,15 +38,14 @@ export function calculatePriceLine(input: PriceLineInput): PriceLineBreakdown {
       ? calcHandlingPerStem(input.ddp!.handlingPerBox!, input.stemsPerBox)
       : toMoney(0);
 
-  const clearing = input.incoterm === "DDP" ? toMoney(input.ddp!.clearingPerStem!) : toMoney(0);
-  const inspection = input.incoterm === "DDP" ? toMoney(input.ddp!.inspectionPerStem!) : toMoney(0);
+  const clearingAndInspection =
+    input.incoterm === "DDP" ? toMoney(input.ddp!.clearingAndInspectionPerStem!) : toMoney(0);
 
   const totalCostPriceSource = costPricePerStemForIncoterm({
     incoterm: input.incoterm,
     fobPricePerStem: input.fobPricePerStem,
     freightPerStemValue: freight,
-    clearingPerStem: clearing,
-    inspectionPerStem: inspection,
+    clearingAndInspectionPerStem: clearingAndInspection,
     handlingPerStemValue: handling,
   });
 
@@ -74,8 +73,7 @@ export function calculatePriceLine(input: PriceLineInput): PriceLineBreakdown {
     incoterm: input.incoterm,
     fobPricePerStem: toMoney(input.fobPricePerStem),
     freightPerStem: freight,
-    clearingPerStem: clearing,
-    inspectionPerStem: inspection,
+    clearingAndInspectionPerStem: clearingAndInspection,
     handlingPerStem: handling,
     totalCostPricePerStemSource: totalCostPriceSource,
     sourceCurrency: input.sourceCurrency,
