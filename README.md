@@ -17,13 +17,9 @@ WhatsApp-tekst, e-mailtekst en Excel.
 | Styling | Tailwind CSS | Snel, consistent, geen aparte design-system-afhankelijkheid nodig voor een interne tool. |
 | Tests | Vitest | Snel, TypeScript-native, goed voor de prijsengine en parser (pure functies, makkelijk te unit-testen). |
 
-Alles staat in de map `flower-quotes/` binnen deze repository. De rest van de repository (root `index.html`/`app.js`)
-is een ongerelateerde, bestaande applicatie en is niet aangeraakt.
-
 ## 2. Architectuuroverzicht
 
 ```
-flower-quotes/
 ├── prisma/
 │   ├── schema.prisma       # volledig datamodel (20 entiteiten, zie sectie 4)
 │   ├── migrations/
@@ -148,6 +144,7 @@ input van de prijsengine.
 Vereisten: Node.js 20+, PostgreSQL 14+.
 
 ```bash
+git clone https://github.com/wjtibbe/flower-quotes
 cd flower-quotes
 npm install
 cp .env.example .env          # pas DATABASE_URL/NEXTAUTH_SECRET aan indien nodig
@@ -168,7 +165,43 @@ npm run test:watch
 58 unit tests, met name gericht op de prijsengine (elk vereist testgeval uit sectie 23 van de opdracht) en de
 import-parser (tegen echte voorbeeldregels).
 
-## 9. Wat is getest, wat niet
+## 9. Live deployen (zodat je de app in de browser kunt gebruiken)
+
+De snelste manier om de app zonder eigen server te gebruiken: **Vercel** (host de app, gratis) + **Neon**
+(gratis PostgreSQL-database in de cloud). Geen terminal nodig na deze stappen.
+
+1. **Database maken (Neon)**
+   - Ga naar [neon.tech](https://neon.tech) en maak een gratis account/project aan.
+   - Kopieer de **connection string** die Neon toont (begint met `postgresql://...`). Dit wordt zo je `DATABASE_URL`.
+
+2. **App hosten (Vercel)**
+   - Ga naar [vercel.com](https://vercel.com), log in met je GitHub-account en klik "Add New… → Project".
+   - Kies de repository `wjtibbe/flower-quotes`.
+   - Bij "Environment Variables" voeg je toe:
+     - `DATABASE_URL` → de connection string van Neon (stap 1)
+     - `NEXTAUTH_SECRET` → een lange willekeurige tekst (bijv. gegenereerd op [passwordsgenerator.net](https://passwordsgenerator.net) met 40+ tekens)
+     - `NEXTAUTH_URL` → laat dit eerst leeg; je zet dit ná de eerste deploy op de URL die Vercel je geeft (bijv. `https://flower-quotes.vercel.app`)
+     - `ADMIN_SEED_TOKEN` → een willekeurig wachtwoord dat je zelf verzint (onthoud dit, nodig in stap 3)
+   - Klik "Deploy". Vercel installeert alles en voert automatisch de database-migraties uit.
+
+3. **Voorbeelddata laden (eenmalig, via de browser)**
+   - Zodra de deploy klaar is, open je: `https://<jouw-vercel-url>/api/admin/seed?token=<jouw ADMIN_SEED_TOKEN>`
+   - Je ziet een bevestigingsbericht in het scherm. Klaar - de app bevat nu Mike, Willem-Jan, voorbeeldfarms,
+     klanten en aanbiedingen.
+
+4. **NEXTAUTH_URL alsnog instellen**
+   - Ga terug naar je Vercel-project → Settings → Environment Variables, vul `NEXTAUTH_URL` in met je echte
+     Vercel-URL, en klik "Redeploy" (Deployments-tab → "..." → Redeploy).
+
+5. **Inloggen**
+   - Ga naar je Vercel-URL, log in met `willem-jan@flowerquotes.local` / `Welkom2026!` (of `mike@flowerquotes.local`).
+   - Wijzig het wachtwoord daarna via het "Instellingen"-scherm (nieuwe medewerker aanmaken met een eigen wachtwoord
+     is op dit moment de manier om dat te doen; een "wachtwoord wijzigen"-knop voor het eigen account is een goede
+     vervolgstap).
+
+Elke nieuwe `git push` naar de `main`-branch van de repository deployt automatisch een nieuwe versie op Vercel.
+
+## 10. Wat is getest, wat niet
 
 - **Prijsengine**: 46 unit tests (vracht/steel, handling/steel, FOB/C&F/DDP, marge, valutaconversie, afronding,
   ontbrekende data, nul stelen per doos, offerte-snapshot-onveranderlijkheid).
@@ -181,7 +214,7 @@ import-parser (tegen echte voorbeeldregels).
 - **Niet geautomatiseerd**: er is geen Playwright-testsuite in de repository opgenomen (de browser-tests hierboven
   waren wegwerpscripts tijdens de bouw). Een vervolgstap zou zijn deze als `npm run test:e2e` vast te leggen.
 
-## 10. Bekende beperkingen / risico's voor een volgende iteratie
+## 11. Bekende beperkingen / risico's voor een volgende iteratie
 
 1. **Geen OCR** - screenshots/foto's en niet-doorzoekbare PDF's vereisen nu volledig handmatige invoer. De
    architectuur (`src/lib/import/extract/imageText.ts`) is al voorbereid om een OCR-engine (bijv. Tesseract.js of een
@@ -197,7 +230,7 @@ import-parser (tegen echte voorbeeldregels).
    scherm. Een volgende stap is per-actie rolchecks toevoegen.
 5. **Geen automatische e-mail-/WhatsApp-verzending** - bewust buiten scope voor v1, zoals gevraagd (kopiëren volstaat).
 
-## 11. Veiligheid
+## 12. Veiligheid
 
 - Elke pagina behalve `/login` en de NextAuth-routes is afgeschermd door `middleware.ts` (server-side sessiecheck).
 - Wachtwoorden worden gehasht met bcrypt, nooit in platte tekst opgeslagen of gelogd.
