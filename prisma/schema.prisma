@@ -1,0 +1,495 @@
+// Flower Quotes MVP - data model
+//
+// Design notes (see README for full rationale):
+// - UUID primary keys everywhere for safe cross-record referencing and future sync/export.
+// - Soft delete via `active` / `archivedAt` flags on reference data instead of hard deletes,
+//   because historical quotes must remain reproducible even if e.g. a farm or product is retired.
+// - All monetary amounts, rates, weights and percentages use Prisma `Decimal` (backed by
+//   PostgreSQL NUMERIC) - never Float - per the "no floating point for money" requirement.
+// - "createdBy" / "updatedBy" + timestamps on every business entity for lightweight audit,
+//   per section 18 (no full field-level history needed for v1).
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------------------------------------------------------------
+// Users & auth
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  ADMIN
+  SALES
+  READ_ONLY
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         UserRole @default(SALES)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  farmOffersCreated FarmOffer[] @relation("FarmOfferCreatedBy")
+  quotesCreated     Quote[]     @relation("QuoteCreatedBy")
+}
+
+// ---------------------------------------------------------------------------
+// Farms
+// ---------------------------------------------------------------------------
+
+model Farm {
+  id        String   @id @default(uuid())
+  name      String
+  country   String
+  originId  String?
+  active    Boolean  @default(true)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  origin         Origin?                  @relation(fields: [originId], references: [id])
+  aliases        FarmAlias[]
+  offers         FarmOffer[]
+  weightProfiles PackagingWeightProfile[]
+
+  @@index([originId])
+}
+
+model FarmAlias {
+  id        String   @id @default(uuid())
+  farmId    String
+  alias     String
+  createdAt DateTime @default(now())
+
+  farm Farm @relation(fields: [farmId], references: [id], onDelete: Cascade)
+
+  @@unique([farmId, alias])
+}
+
+// ---------------------------------------------------------------------------
+// Central product catalog
+// ---------------------------------------------------------------------------
+
+model Product {
+  id           String   @id @default(uuid())
+  productGroup String // e.g. Hydrangea, Alstroemeria, Rose
+  name         String // standardized display name
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  aliases  ProductAlias[]
+  variants ProductVariant[]
+
+  @@index([productGroup])
+}
+
+model ProductAlias {
+  id        String   @id @default(uuid())
+  productId String
+  alias     String
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, alias])
+}
+
+// A concrete sellable variant: variety/color/grade/treatment combination.
+model ProductVariant {
+  id        String   @id @default(uuid())
+  productId String
+  variety   String?
+  color     String?
+  grade     String? // quality / grade, e.g. "Select", "Fancy", "Premium"
+  treatment String? // e.g. "normal", "tinted", "painted"
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product        Product                  @relation(fields: [productId], references: [id])
+  weightProfiles PackagingWeightProfile[]
+  farmOfferLines FarmOfferLine[]
+
+  @@unique([productId, variety, color, grade, treatment])
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Packaging / weight profiles
+// ---------------------------------------------------------------------------
+
+model PackagingWeightProfile {
+  id               String    @id @default(uuid())
+  farmId           String
+  productVariantId String
+  boxType          String // e.g. QB, HB, FB
+  stemsPerBox      Int
+  weightPerBoxKg   Decimal   @db.Decimal(10, 3)
+  effectiveFrom    DateTime  @default(now())
+  effectiveTo      DateTime?
+  active           Boolean   @default(true)
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  farm           Farm           @relation(fields: [farmId], references: [id])
+  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+
+  @@index([farmId, productVariantId, boxType, stemsPerBox])
+}
+
+// ---------------------------------------------------------------------------
+// Geography: origins, destinations, routes, freight
+// ---------------------------------------------------------------------------
+
+model Origin {
+  id        String   @id @default(uuid())
+  city      String
+  country   String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  farms          Farm[]
+  routes         Route[]
+  farmOfferLines FarmOfferLine[]
+  quotes         Quote[]
+
+  @@unique([city, country])
+}
+
+model Destination {
+  id        String   @id @default(uuid())
+  city      String
+  country   String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  routes    Route[]
+  customers Customer[]
+  quotes    Quote[]
+
+  @@unique([city, country])
+}
+
+model Route {
+  id            String   @id @default(uuid())
+  originId      String
+  destinationId String
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  origin       Origin        @relation(fields: [originId], references: [id])
+  destination  Destination   @relation(fields: [destinationId], references: [id])
+  freightRates FreightRate[]
+  ddpCostRates DdpCostRate[]
+
+  @@unique([originId, destinationId])
+}
+
+model FreightRate {
+  id            String    @id @default(uuid())
+  routeId       String
+  currency      String // ISO code, e.g. USD
+  ratePerKg     Decimal   @db.Decimal(10, 4)
+  effectiveFrom DateTime  @default(now())
+  effectiveTo   DateTime?
+  active        Boolean   @default(true)
+  notes         String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  route Route @relation(fields: [routeId], references: [id])
+
+  @@index([routeId, active])
+}
+
+// DDP cost rates per route: clearing/inspection per stem, handling per box.
+// Modeled as a table of typed line items so new DDP cost types can be added later
+// without a schema migration (see section 11.5 "uitgebreid kunnen worden").
+enum DdpCostType {
+  CLEARING_PER_STEM
+  INSPECTION_PER_STEM
+  HANDLING_PER_BOX
+}
+
+model DdpCostRate {
+  id            String      @id @default(uuid())
+  routeId       String
+  costType      DdpCostType
+  currency      String
+  amount        Decimal     @db.Decimal(10, 4)
+  effectiveFrom DateTime    @default(now())
+  effectiveTo   DateTime?
+  active        Boolean     @default(true)
+  notes         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  route Route @relation(fields: [routeId], references: [id])
+
+  @@index([routeId, costType, active])
+}
+
+// ---------------------------------------------------------------------------
+// Customers
+// ---------------------------------------------------------------------------
+
+enum Incoterm {
+  FOB
+  CFR // "C&F" in the spec; CFR is the standard Incoterms code for the same thing
+  DDP
+}
+
+enum Currency {
+  USD
+  EUR
+}
+
+model Customer {
+  id                   String   @id @default(uuid())
+  companyName          String
+  contactName          String?
+  whatsappNumber       String?
+  email                String?
+  destinationId        String?
+  defaultCurrency      Currency @default(USD)
+  defaultIncoterm      Incoterm @default(FOB)
+  defaultMarginPercent Decimal  @default(15) @db.Decimal(6, 3)
+  active               Boolean  @default(true)
+  notes                String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  destination Destination? @relation(fields: [destinationId], references: [id])
+  quotes      Quote[]
+
+  @@index([destinationId])
+}
+
+// ---------------------------------------------------------------------------
+// Exchange rates
+// ---------------------------------------------------------------------------
+
+model ExchangeRate {
+  id            String   @id @default(uuid())
+  baseCurrency  Currency
+  quoteCurrency Currency
+  rate          Decimal  @db.Decimal(12, 6) // 1 base = `rate` quote, e.g. 1 USD = 0.92 EUR
+  effectiveFrom DateTime @default(now())
+  notes         String?
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  @@index([baseCurrency, quoteCurrency, active])
+}
+
+// ---------------------------------------------------------------------------
+// Imports: source uploads, farm offers, farm offer lines
+// ---------------------------------------------------------------------------
+
+enum SourceFileType {
+  IMAGE
+  PDF
+  EMAIL
+  EXCEL
+  MANUAL
+}
+
+model SourceUpload {
+  id           String         @id @default(uuid())
+  fileType     SourceFileType
+  originalName String
+  storagePath  String
+  rawText      String? // extracted raw text, kept for audit/reprocessing
+  uploadedById String
+  createdAt    DateTime       @default(now())
+
+  farmOffers FarmOffer[]
+}
+
+enum FarmOfferStatus {
+  DRAFT // just imported, awaiting review
+  REVIEWED // user has confirmed the lines
+  ARCHIVED
+}
+
+model FarmOffer {
+  id             String          @id @default(uuid())
+  farmId         String?
+  sourceUploadId String?
+  title          String?
+  offerDate      DateTime?
+  validUntil     DateTime?
+  status         FarmOfferStatus @default(DRAFT)
+  createdById    String
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  farm         Farm?           @relation(fields: [farmId], references: [id])
+  sourceUpload SourceUpload?   @relation(fields: [sourceUploadId], references: [id])
+  createdBy    User            @relation("FarmOfferCreatedBy", fields: [createdById], references: [id])
+  lines        FarmOfferLine[]
+
+  @@index([farmId])
+  @@index([status])
+}
+
+enum ConfidenceLevel {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+model FarmOfferLine {
+  id               String  @id @default(uuid())
+  farmOfferId      String
+  productVariantId String?
+
+  // Raw / as-recognized fields (always kept, independent of productVariant link)
+  rawText          String // original unstructured line, verbatim
+  farmNameRaw      String?
+  countryOfOrigin  String?
+  originId         String?
+  productGroupRaw  String?
+  productNameRaw   String?
+  varietyRaw       String?
+  colorRaw         String?
+  gradeRaw         String?
+  treatmentRaw     String? // normal / tinted / painted / ...
+  boxType          String?
+  boxesAvailable   Int?
+  stemsPerBox      Int?
+  fobPricePerStem  Decimal?  @db.Decimal(10, 4)
+  currency         Currency  @default(USD)
+  weightPerBoxKg   Decimal?  @db.Decimal(10, 3)
+  notes            String?
+  extraLeadTimeHrs Int? // "Additional time required 72 HR"
+  validFrom        DateTime?
+  validUntil       DateTime?
+
+  confidence      ConfidenceLevel @default(MEDIUM)
+  fieldConfidence Json? // per-field confidence map for fine-grained review UI
+  needsReview     Boolean         @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  farmOffer      FarmOffer       @relation(fields: [farmOfferId], references: [id], onDelete: Cascade)
+  productVariant ProductVariant? @relation(fields: [productVariantId], references: [id])
+  origin         Origin?         @relation(fields: [originId], references: [id])
+  quoteLines     QuoteLine[]
+
+  @@index([farmOfferId])
+  @@index([productVariantId])
+}
+
+// ---------------------------------------------------------------------------
+// Quotes
+// ---------------------------------------------------------------------------
+
+enum QuoteStatus {
+  CONCEPT
+  READY
+  EXPORTED
+  EXPIRED
+  CANCELLED
+}
+
+model Quote {
+  id                   String      @id @default(uuid())
+  quoteNumber          String      @unique
+  customerId           String
+  originId             String?
+  destinationId        String?
+  incoterm             Incoterm
+  currency             Currency
+  // Exchange rate snapshot: null when currency == source currency (no conversion needed)
+  exchangeRateBase     Currency?
+  exchangeRateQuote    Currency?
+  exchangeRateValue    Decimal?    @db.Decimal(12, 6)
+  exchangeRateDate     DateTime?
+  marginPercentDefault Decimal     @db.Decimal(6, 3)
+  status               QuoteStatus @default(CONCEPT)
+  validUntil           DateTime?
+  createdById          String
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  customer    Customer      @relation(fields: [customerId], references: [id])
+  origin      Origin?       @relation(fields: [originId], references: [id])
+  destination Destination?  @relation(fields: [destinationId], references: [id])
+  createdBy   User          @relation("QuoteCreatedBy", fields: [createdById], references: [id])
+  lines       QuoteLine[]
+  exports     QuoteExport[]
+
+  @@index([customerId])
+  @@index([status])
+}
+
+model QuoteLine {
+  id              String @id @default(uuid())
+  quoteId         String
+  farmOfferLineId String
+
+  // Snapshot of the inputs used for this calculation (so history is reproducible
+  // even if the underlying farm offer, weight profile or rate changes later)
+  fobPricePerStem            Decimal  @db.Decimal(10, 6)
+  sourceCurrency             Currency
+  weightPerBoxKg             Decimal? @db.Decimal(10, 3)
+  stemsPerBox                Int
+  freightRatePerKg           Decimal? @db.Decimal(10, 4)
+  freightPerStem             Decimal? @db.Decimal(12, 6)
+  clearingPerStem            Decimal? @db.Decimal(12, 6)
+  inspectionPerStem          Decimal? @db.Decimal(12, 6)
+  handlingPerBox             Decimal? @db.Decimal(12, 6)
+  handlingPerStem            Decimal? @db.Decimal(12, 6)
+  costPricePerStemSource     Decimal  @db.Decimal(12, 6) // in source currency
+  costPricePerStemQuote      Decimal  @db.Decimal(12, 6) // converted to quote currency
+  marginPercent              Decimal  @db.Decimal(6, 3)
+  calculatedSellPricePerStem Decimal  @db.Decimal(12, 6)
+
+  manualSellPricePerStem Decimal? @db.Decimal(12, 6)
+  isManualOverride       Boolean  @default(false)
+  overrideReason         String?
+
+  quantityBoxes Int
+  warnings      Json? // list of validation warnings captured at calc time
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  quote         Quote         @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  farmOfferLine FarmOfferLine @relation(fields: [farmOfferLineId], references: [id])
+
+  @@index([quoteId])
+}
+
+enum QuoteExportType {
+  WHATSAPP
+  EMAIL
+  EXCEL_CUSTOMER
+  EXCEL_INTERNAL
+}
+
+model QuoteExport {
+  id        String          @id @default(uuid())
+  quoteId   String
+  type      QuoteExportType
+  content   String? // rendered text for WHATSAPP/EMAIL exports
+  filePath  String? // stored file path for EXCEL exports
+  createdAt DateTime        @default(now())
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@index([quoteId])
+}
