@@ -172,13 +172,16 @@ De snelste manier om de app zonder eigen server te gebruiken: **Vercel** (host d
 
 1. **Database maken (Neon)**
    - Ga naar [neon.tech](https://neon.tech) en maak een gratis account/project aan.
-   - Kopieer de **connection string** die Neon toont (begint met `postgresql://...`). Dit wordt zo je `DATABASE_URL`.
+   - Kopieer de **connection string** die Neon toont (begint met `postgresql://...`). Dit wordt zo zowel je
+     `DATABASE_URL` als je `DIRECT_URL` (Neon heeft geen aparte pooled/direct-strings zoals Supabase - dezelfde
+     waarde in beide is prima).
 
 2. **App hosten (Vercel)**
    - Ga naar [vercel.com](https://vercel.com), log in met je GitHub-account en klik "Add New… → Project".
    - Kies de repository `wjtibbe/flower-quotes`.
    - Bij "Environment Variables" voeg je toe:
      - `DATABASE_URL` → de connection string van Neon (stap 1)
+     - `DIRECT_URL` → dezelfde connection string als `DATABASE_URL`
      - `NEXTAUTH_SECRET` → een lange willekeurige tekst (bijv. gegenereerd op [passwordsgenerator.net](https://passwordsgenerator.net) met 40+ tekens)
      - `NEXTAUTH_URL` → laat dit eerst leeg; je zet dit ná de eerste deploy op de URL die Vercel je geeft (bijv. `https://flower-quotes.vercel.app`)
      - `ADMIN_SEED_TOKEN` → een willekeurig wachtwoord dat je zelf verzint (onthoud dit, nodig in stap 3)
@@ -200,6 +203,11 @@ De snelste manier om de app zonder eigen server te gebruiken: **Vercel** (host d
      vervolgstap).
 
 Elke nieuwe `git push` naar de `main`-branch van de repository deployt automatisch een nieuwe versie op Vercel.
+
+> **Supabase in plaats van Neon?** Kan ook - Supabase is ook gewoon PostgreSQL. Gebruik dan bij stap 1/2 Supabase's
+> **"Connection pooling"**-string (poort 6543) als `DATABASE_URL`, en de **"Direct connection"**-string (poort 5432)
+> als `DIRECT_URL` - dat onderscheid bestaat bij Neon niet, maar is bij Supabase nodig omdat migraties niet via de
+> pooled/pgbouncer-verbinding kunnen lopen.
 
 ## 10. Wat is getest, wat niet
 

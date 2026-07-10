@@ -10,8 +10,13 @@
 //   per section 18 (no full field-level history needed for v1).
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // Only needed for connection-pooled providers (e.g. Supabase's pgbouncer
+  // URL as DATABASE_URL): migrations need a direct, non-pooled connection.
+  // For providers without pooling (Neon, a plain local Postgres), set
+  // DIRECT_URL to the same value as DATABASE_URL.
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
