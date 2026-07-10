@@ -107,13 +107,7 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
       { routeId: quitoDubai.id, currency: "USD", ratePerKg: "2.60", notes: "Gemiddeld tarief" },
       { routeId: quitoAmsterdam.id, currency: "USD", ratePerKg: "3.10", notes: "Gemiddeld tarief" },
       { routeId: bogotaDoha.id, currency: "USD", ratePerKg: "2.40", notes: "Gemiddeld tarief" },
-      {
-        routeId: bogotaAmsterdam.id,
-        currency: "USD",
-        ratePerKg: "2.90",
-        notes: "Bijna verlopen - controleren",
-        effectiveTo: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days from now
-      },
+      { routeId: bogotaAmsterdam.id, currency: "USD", ratePerKg: "2.90", notes: "Gemiddeld tarief" },
     ],
   });
 

@@ -4,10 +4,7 @@ import { prisma } from "@/lib/db";
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
-  const now = new Date();
-  const soon = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
-
-  const [recentOffers, recentQuotes, conceptQuotes, unlinkedLines, expiringRates, activeRates] =
+  const [recentOffers, recentQuotes, conceptQuotes, unlinkedLines, routesWithoutRate, activeRates] =
     await Promise.all([
       prisma.farmOffer.findMany({
         orderBy: { createdAt: "desc" },
@@ -25,9 +22,9 @@ export default async function DashboardPage() {
         take: 10,
         include: { farmOffer: { include: { farm: true } } },
       }),
-      prisma.freightRate.findMany({
-        where: { active: true, effectiveTo: { lte: soon, gte: now } },
-        include: { route: { include: { origin: true, destination: true } } },
+      prisma.route.findMany({
+        where: { active: true, freightRates: { none: { active: true } } },
+        include: { origin: true, destination: true },
       }),
       prisma.exchangeRate.findMany({ where: { active: true }, orderBy: { effectiveFrom: "desc" } }),
     ]);
@@ -82,15 +79,13 @@ export default async function DashboardPage() {
           </ul>
         </Section>
 
-        <Section title="Verlopen of bijna verlopen vrachttarieven" href="/routes">
-          {expiringRates.length === 0 && <Empty text="Geen tarieven verlopen binnen 14 dagen." />}
+        <Section title="Routes zonder vrachttarief" href="/routes">
+          {routesWithoutRate.length === 0 && <Empty text="Elke route heeft een tarief." />}
           <ul className="divide-y divide-gray-100">
-            {expiringRates.map((r) => (
+            {routesWithoutRate.map((r) => (
               <li key={r.id} className="py-2 text-sm">
-                {r.route.origin.city} → {r.route.destination.city}: {r.currency} {r.ratePerKg.toString()}/kg
-                <div className="text-xs text-amber-600">
-                  Verloopt op {r.effectiveTo?.toLocaleDateString("nl-NL")}
-                </div>
+                {r.origin.city} → {r.destination.city}
+                <span className="ml-2 text-xs text-amber-600">nog geen tarief ingesteld</span>
               </li>
             ))}
           </ul>

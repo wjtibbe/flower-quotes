@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
-import { fmtMoney, fmtDate } from "@/lib/format";
-import { createRoute, addFreightRate } from "./actions";
+import { fmtMoney } from "@/lib/format";
+import { createRoute, setFreightRate } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,7 @@ export default async function RoutesPage() {
       include: {
         origin: true,
         destination: true,
-        freightRates: { orderBy: { effectiveFrom: "desc" }, take: 5 },
+        freightRates: { where: { active: true }, orderBy: { effectiveFrom: "desc" }, take: 1 },
       },
       orderBy: { createdAt: "asc" },
     }),
@@ -23,78 +23,51 @@ export default async function RoutesPage() {
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Routes & vrachttarieven</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Gemiddeld vrachttarief in USD per kg per route. Een nieuw tarief maakt het vorige tarief historisch.
+          Eén vrachttarief per route. Een nieuwe waarde vervangt direct de vorige - geen historie of einddatums.
         </p>
       </div>
 
-      <div className="space-y-4">
+      <div className="space-y-3">
         {routes.map((route) => {
-          const current = route.freightRates.find((r) => r.active);
+          const current = route.freightRates[0];
           return (
             <div key={route.id} className="card p-4">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 <div className="font-medium text-gray-900">
                   {route.origin.city} → {route.destination.city}
+                  {current && (
+                    <span className="ml-3 text-sm text-gray-500 font-normal">
+                      huidig: {current.currency} {fmtMoney(current.ratePerKg, 4)}/kg
+                    </span>
+                  )}
                 </div>
-                {current ? (
-                  <span className="badge-high">
-                    {current.currency} {fmtMoney(current.ratePerKg, 4)}/kg
-                    {current.effectiveTo ? ` (tot ${fmtDate(current.effectiveTo)})` : ""}
-                  </span>
-                ) : (
-                  <span className="badge-low">Geen actief tarief</span>
-                )}
+
+                <form action={setFreightRate.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
+                  <div>
+                    <label className="label">Tarief/kg</label>
+                    <input
+                      name="ratePerKg"
+                      type="number"
+                      step="0.0001"
+                      required
+                      defaultValue={current?.ratePerKg.toString()}
+                      className="input py-1 px-2 text-xs w-24"
+                    />
+                  </div>
+                  <div>
+                    <label className="label">Valuta</label>
+                    <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue={current?.currency ?? "USD"}>
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Opmerkingen</label>
+                    <input name="notes" defaultValue={current?.notes ?? ""} className="input py-1 px-2 text-xs w-40" />
+                  </div>
+                  <button className="btn-primary py-1 px-2 text-xs">{current ? "Wijzigen" : "Instellen"}</button>
+                </form>
               </div>
-
-              {route.freightRates.length > 0 && (
-                <table className="table-base mt-3">
-                  <thead>
-                    <tr>
-                      <th>Tarief</th>
-                      <th>Ingangsdatum</th>
-                      <th>Einddatum</th>
-                      <th>Status</th>
-                      <th>Opmerkingen</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {route.freightRates.map((r) => (
-                      <tr key={r.id}>
-                        <td>
-                          {r.currency} {fmtMoney(r.ratePerKg, 4)}
-                        </td>
-                        <td>{fmtDate(r.effectiveFrom)}</td>
-                        <td>{fmtDate(r.effectiveTo)}</td>
-                        <td>{r.active ? <span className="badge-high">actief</span> : <span className="badge bg-gray-100 text-gray-500">historisch</span>}</td>
-                        <td>{r.notes ?? "-"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-
-              <form action={addFreightRate.bind(null, route.id)} className="mt-3 flex flex-wrap gap-2 items-end">
-                <div>
-                  <label className="label">Tarief/kg</label>
-                  <input name="ratePerKg" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
-                </div>
-                <div>
-                  <label className="label">Valuta</label>
-                  <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue="USD">
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="label">Einddatum</label>
-                  <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
-                </div>
-                <div>
-                  <label className="label">Opmerkingen</label>
-                  <input name="notes" className="input py-1 px-2 text-xs w-40" />
-                </div>
-                <button className="btn-secondary py-1 px-2 text-xs">Nieuw tarief instellen</button>
-              </form>
             </div>
           );
         })}

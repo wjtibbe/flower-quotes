@@ -16,18 +16,29 @@ export async function createRoute(formData: FormData): Promise<void> {
   revalidatePath("/routes");
 }
 
-export async function addFreightRate(routeId: string, formData: FormData): Promise<void> {
+/**
+ * Sets the freight rate for a route. There is exactly one rate per route -
+ * no history, no start/end dates. Editing overwrites the existing rate in
+ * place; if the route has no rate yet, one is created.
+ */
+export async function setFreightRate(routeId: string, formData: FormData): Promise<void> {
   const ratePerKg = String(formData.get("ratePerKg") ?? "");
   const currency = String(formData.get("currency") ?? "USD");
-  const effectiveTo = formData.get("effectiveTo") ? new Date(String(formData.get("effectiveTo"))) : null;
   const notes = (formData.get("notes") as string) || null;
   if (!ratePerKg) throw new Error("Tarief per kg is verplicht");
 
-  // Deactivate the previous active rate for this route so history stays intact
-  // while only one rate is "current" at a time.
-  await prisma.$transaction([
-    prisma.freightRate.updateMany({ where: { routeId, active: true }, data: { active: false } }),
-    prisma.freightRate.create({ data: { routeId, ratePerKg, currency, effectiveTo, notes } }),
-  ]);
+  const existing = await prisma.freightRate.findFirst({
+    where: { routeId, active: true },
+    orderBy: { effectiveFrom: "desc" },
+  });
+
+  if (existing) {
+    await prisma.freightRate.update({
+      where: { id: existing.id },
+      data: { ratePerKg, currency, notes, effectiveTo: null },
+    });
+  } else {
+    await prisma.freightRate.create({ data: { routeId, ratePerKg, currency, notes } });
+  }
   revalidatePath("/routes");
 }
