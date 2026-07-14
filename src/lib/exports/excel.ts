@@ -102,7 +102,7 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
 
   const columns = [
     "Product",
-    "Farm",
+    "Leverancier",
     "Incoterm",
     "FOB/steel",
     "Vracht/steel",

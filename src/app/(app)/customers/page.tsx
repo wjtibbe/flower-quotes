@@ -86,7 +86,7 @@ export default async function CustomersPage({
             <input className="input" name="contactName" defaultValue={editing?.contactName ?? ""} />
           </div>
           <div>
-            <label className="label">WhatsApp-nummer</label>
+            <label className="label">Telefoonnummer</label>
             <input className="input" name="whatsappNumber" defaultValue={editing?.whatsappNumber ?? ""} />
           </div>
           <div>

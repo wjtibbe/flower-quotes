@@ -6,10 +6,10 @@ import { signOut } from "next-auth/react";
 
 const SECTIONS: { href: string; label: string }[] = [
   { href: "/dashboard", label: "Dashboard" },
-  { href: "/farm-offers", label: "Farm-aanbiedingen" },
+  { href: "/farm-offers", label: "Leveranciersaanbiedingen" },
   { href: "/quotes", label: "Offertes" },
-  { href: "/products", label: "Productdatabase" },
-  { href: "/farms", label: "Farms" },
+  { href: "/products", label: "Assortiment" },
+  { href: "/farms", label: "Leveranciers" },
   { href: "/weight-profiles", label: "Gewichtsprofielen" },
   { href: "/routes", label: "Routes & vracht" },
   { href: "/ddp-costs", label: "DDP-kosten" },

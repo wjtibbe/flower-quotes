@@ -9,7 +9,7 @@ export default async function UploadFarmOfferPage() {
   return (
     <div className="space-y-6 max-w-2xl">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Nieuwe farm-aanbieding uploaden</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Nieuwe leveranciersaanbieding uploaden</h1>
         <p className="text-sm text-gray-500 mt-1">
           Ondersteund: screenshots/afbeeldingen, PDF, e-mailbestanden (.eml/.txt) en Excel. De app leest de inhoud
           automatisch uit; je controleert en corrigeert de herkende regels op het volgende scherm.
@@ -28,7 +28,7 @@ export default async function UploadFarmOfferPage() {
           />
         </div>
         <div>
-          <label className="label">Farm (optioneel, kan later gekoppeld worden)</label>
+          <label className="label">Leverancier (optioneel, kan later gekoppeld worden)</label>
           <select name="farmId" className="input">
             <option value="">Onbekend / later koppelen</option>
             {farms.map((f) => (

@@ -19,9 +19,9 @@ export default async function ProductsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Productdatabase</h1>
+        <h1 className="text-2xl font-semibold text-gray-900">Assortiment</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Centrale producten met variëteit/kleur/kwaliteit-varianten en bekende aliassen van farms.
+          Centrale producten met variëteit/kleur/kwaliteit-varianten en bekende aliassen van leveranciers.
         </p>
       </div>
 

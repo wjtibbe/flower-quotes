@@ -47,7 +47,7 @@ export default async function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Section title="Recente farm-aanbiedingen" href="/farm-offers">
+        <Section title="Recente leveranciersaanbiedingen" href="/farm-offers">
           {recentOffers.length === 0 && <Empty />}
           <ul className="divide-y divide-gray-100">
             {recentOffers.map((o) => (

@@ -14,8 +14,8 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Farms</h1>
-        <p className="text-sm text-gray-500 mt-1">Farms, hun vertrekpunt en bekende naamvarianten (aliassen).</p>
+        <h1 className="text-2xl font-semibold text-gray-900">Leveranciers</h1>
+        <p className="text-sm text-gray-500 mt-1">Leveranciers, hun vertrekpunt en bekende naamvarianten (aliassen).</p>
       </div>
 
       <div className="space-y-4">
@@ -62,7 +62,7 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
       </div>
 
       <div className="card p-6 max-w-2xl">
-        <h2 className="font-semibold text-gray-800 mb-4">{editing ? "Farm bewerken" : "Nieuwe farm"}</h2>
+        <h2 className="font-semibold text-gray-800 mb-4">{editing ? "Leverancier bewerken" : "Nieuwe leverancier"}</h2>
         <form action={saveFarm} key={editing?.id ?? "new"} className="grid grid-cols-2 gap-4">
           {editing && <input type="hidden" name="id" value={editing.id} />}
           <div>
@@ -90,7 +90,7 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
           </div>
           <div className="col-span-2 flex gap-2">
             <button className="btn-primary" type="submit">
-              {editing ? "Opslaan" : "Farm toevoegen"}
+              {editing ? "Opslaan" : "Leverancier toevoegen"}
             </button>
             {editing && (
               <a href="/farms" className="btn-secondary">

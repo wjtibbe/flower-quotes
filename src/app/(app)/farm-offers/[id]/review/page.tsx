@@ -71,7 +71,7 @@ export default async function ReviewFarmOfferPage({
               </div>
 
               <form action={updateOfferLine.bind(null, line.id)} className="grid grid-cols-4 gap-3">
-                <Field label="Farm (tekst)" name="farmNameRaw" defaultValue={line.farmNameRaw ?? ""} />
+                <Field label="Leverancier (tekst)" name="farmNameRaw" defaultValue={line.farmNameRaw ?? ""} />
                 <Field label="Land van herkomst" name="countryOfOrigin" defaultValue={line.countryOfOrigin ?? ""} />
                 <Field label="Productgroep" name="productGroupRaw" defaultValue={line.productGroupRaw ?? ""} />
                 <Field label="Variëteit" name="varietyRaw" defaultValue={line.varietyRaw ?? ""} />

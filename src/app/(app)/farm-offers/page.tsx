@@ -31,7 +31,7 @@ export default async function FarmOffersPage({
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold text-gray-900">Farm-aanbiedingen</h1>
+          <h1 className="text-2xl font-semibold text-gray-900">Leveranciersaanbiedingen</h1>
           <p className="text-sm text-gray-500 mt-1">Alle geüploade en handmatig ingevoerde aanbiedingen.</p>
         </div>
         <Link href="/farm-offers/upload" className="btn-primary">
@@ -41,7 +41,7 @@ export default async function FarmOffersPage({
 
       <form className="flex gap-3 items-end">
         <div>
-          <label className="label">Farm</label>
+          <label className="label">Leverancier</label>
           <select name="farmId" defaultValue={searchParams.farmId ?? ""} className="input">
             <option value="">Alle</option>
             {farms.map((f) => (
@@ -70,7 +70,7 @@ export default async function FarmOffersPage({
           <thead>
             <tr>
               <th>Titel</th>
-              <th>Farm</th>
+              <th>Leverancier</th>
               <th>Regels</th>
               <th>Status</th>
               <th>Aangemaakt</th>

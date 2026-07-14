@@ -23,7 +23,7 @@ export default async function FarmOfferDetailPage({ params }: { params: { id: st
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">{offer.title ?? "Naamloze aanbieding"}</h1>
           <p className="text-sm text-gray-500 mt-1">
-            {offer.farm?.name ?? "Geen farm gekoppeld"} · Status: {offer.status} · Aangemaakt {fmtDate(offer.createdAt)} door{" "}
+            {offer.farm?.name ?? "Geen leverancier gekoppeld"} · Status: {offer.status} · Aangemaakt {fmtDate(offer.createdAt)} door{" "}
             {offer.createdBy.name}
           </p>
         </div>

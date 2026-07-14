@@ -41,7 +41,7 @@ export default async function NewQuotePage({
             <thead>
               <tr>
                 <th>Product</th>
-                <th>Farm</th>
+                <th>Leverancier</th>
                 <th>Box</th>
                 <th>FOB</th>
               </tr>

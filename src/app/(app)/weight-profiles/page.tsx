@@ -25,7 +25,7 @@ export default async function WeightProfilesPage({ searchParams }: { searchParam
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Gewichtsprofielen</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Boxgewicht per farm, product, boxtype en aantal stelen - gebruikt om vracht per steel te berekenen.
+          Boxgewicht per leverancier, product, boxtype en aantal stelen - gebruikt om vracht per steel te berekenen.
         </p>
       </div>
 
@@ -33,7 +33,7 @@ export default async function WeightProfilesPage({ searchParams }: { searchParam
         <table className="table-base">
           <thead>
             <tr>
-              <th>Farm</th>
+              <th>Leverancier</th>
               <th>Product</th>
               <th>Box</th>
               <th>Stelen/doos</th>
@@ -85,9 +85,9 @@ export default async function WeightProfilesPage({ searchParams }: { searchParam
         <form action={saveWeightProfile} key={editing?.id ?? "new"} className="grid grid-cols-2 gap-4">
           {editing && <input type="hidden" name="id" value={editing.id} />}
           <div>
-            <label className="label">Farm *</label>
+            <label className="label">Leverancier *</label>
             <select className="input" name="farmId" required defaultValue={editing?.farmId ?? ""}>
-              <option value="">Kies farm...</option>
+              <option value="">Kies leverancier...</option>
               {farms.map((f) => (
                 <option key={f.id} value={f.id}>
                   {f.name}

@@ -14,7 +14,7 @@ export async function saveWeightProfile(formData: FormData): Promise<void> {
     notes: (formData.get("notes") as string) || null,
   };
   if (!data.farmId || !data.productVariantId || !data.stemsPerBox) {
-    throw new Error("Farm, product en stelen per doos zijn verplicht");
+    throw new Error("Leverancier, product en stelen per doos zijn verplicht");
   }
 
   if (id) {
