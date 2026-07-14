@@ -11,7 +11,7 @@ function finalPrice(line: QuoteLineForExport): string {
 function productLabel(line: QuoteLineForExport): string {
   const v = line.farmOfferLine.productVariant;
   const base = v
-    ? [v.color, v.variety, v.grade].filter(Boolean).join(" ") || v.product.name
+    ? [v.color, v.variety, v.grade, v.stemLength].filter(Boolean).join(" ") || v.product.name
     : line.farmOfferLine.productGroupRaw ?? line.farmOfferLine.rawText.slice(0, 40);
 
   const treatment = line.farmOfferLine.treatmentRaw;

@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { suggestProductVariant } from "@/lib/import/aliasMatching";
+import { variantLabel } from "@/lib/variantLabel";
 import { updateOfferLine, deleteOfferLine, addManualOfferLine, markOfferReviewed } from "../../actions";
 
 export const dynamic = "force-dynamic";
@@ -129,9 +130,7 @@ export default async function ReviewFarmOfferPage({
                       .filter((v) => !suggestions.some((s) => s.productVariantId === v.id))
                       .map((v) => (
                         <option key={v.id} value={v.id}>
-                          {v.product.name}
-                          {v.color ? ` - ${v.color}` : ""}
-                          {v.grade ? ` - ${v.grade}` : ""}
+                          {variantLabel(v, v.product.name)}
                         </option>
                       ))}
                   </select>

@@ -109,23 +109,24 @@ model ProductAlias {
   @@unique([productId, alias])
 }
 
-// A concrete sellable variant: variety/color/grade/treatment combination.
+// A concrete sellable variant: variety/length (+ optional color/grade/treatment).
 model ProductVariant {
-  id        String   @id @default(uuid())
-  productId String
-  variety   String?
-  color     String?
-  grade     String? // quality / grade, e.g. "Select", "Fancy", "Premium"
-  treatment String? // e.g. "normal", "tinted", "painted"
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id         String   @id @default(uuid())
+  productId  String
+  variety    String?
+  stemLength String? // length, e.g. "60 cm" or "50-70 cm"
+  color      String?
+  grade      String? // quality / grade, e.g. "Select", "Fancy", "Premium"
+  treatment  String? // e.g. "normal", "tinted", "painted"
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
   product        Product                  @relation(fields: [productId], references: [id])
   weightProfiles PackagingWeightProfile[]
   farmOfferLines FarmOfferLine[]
 
-  @@unique([productId, variety, color, grade, treatment])
+  @@unique([productId, variety, stemLength, color, grade, treatment])
   @@index([productId])
 }
 
@@ -133,10 +134,13 @@ model ProductVariant {
 // Packaging / weight profiles
 // ---------------------------------------------------------------------------
 
+// Doubles as the supplier assortment: one row links a central product
+// variant to one supplier, with supplier-specific packaging details.
 model PackagingWeightProfile {
   id               String    @id @default(uuid())
   farmId           String
   productVariantId String
+  supplierCode     String? // supplier's own article/product code
   boxType          String // e.g. QB, HB, FB
   stemsPerBox      Int
   weightPerBoxKg   Decimal   @db.Decimal(10, 3)

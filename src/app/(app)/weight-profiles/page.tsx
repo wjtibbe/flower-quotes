@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
+import { variantLabel } from "@/lib/variantLabel";
 import { saveWeightProfile, toggleWeightProfileActive } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -46,11 +47,7 @@ export default async function WeightProfilesPage({ searchParams }: { searchParam
             {profiles.map((p) => (
               <tr key={p.id}>
                 <td>{p.farm.name}</td>
-                <td>
-                  {p.productVariant.product.name}
-                  {p.productVariant.color ? ` - ${p.productVariant.color}` : ""}
-                  {p.productVariant.grade ? ` - ${p.productVariant.grade}` : ""}
-                </td>
+                <td>{variantLabel(p.productVariant, p.productVariant.product.name)}</td>
                 <td>{p.boxType}</td>
                 <td>{p.stemsPerBox}</td>
                 <td>{fmtMoney(p.weightPerBoxKg, 3)} kg</td>
@@ -101,9 +98,7 @@ export default async function WeightProfilesPage({ searchParams }: { searchParam
               <option value="">Kies product...</option>
               {variants.map((v) => (
                 <option key={v.id} value={v.id}>
-                  {v.product.name}
-                  {v.color ? ` - ${v.color}` : ""}
-                  {v.grade ? ` - ${v.grade}` : ""}
+                  {variantLabel(v, v.product.name)}
                 </option>
               ))}
             </select>

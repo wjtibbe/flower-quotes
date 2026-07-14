@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { fmtDate, fmtMoney } from "@/lib/format";
+import { variantLabel } from "@/lib/variantLabel";
 
 export const dynamic = "force-dynamic";
 
@@ -58,11 +59,7 @@ export default async function FarmOfferDetailPage({ params }: { params: { id: st
                 </td>
                 <td>
                   {line.productVariant ? (
-                    <>
-                      {line.productVariant.product.name}
-                      {line.productVariant.color ? ` - ${line.productVariant.color}` : ""}
-                      {line.productVariant.grade ? ` - ${line.productVariant.grade}` : ""}
-                    </>
+                    <>{variantLabel(line.productVariant, line.productVariant.product.name)}</>
                   ) : (
                     <span className="text-amber-600">
                       {line.productGroupRaw ?? line.rawText.slice(0, 40)} (niet gekoppeld)

@@ -43,6 +43,7 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
     "Productgroep",
     "Product",
     "Variëteit",
+    "Lengte",
     "Kleur",
     "Kwaliteit",
     "Behandeling",
@@ -69,6 +70,7 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
       variant?.product.productGroup ?? line.farmOfferLine.productGroupRaw ?? "",
       variant?.product.name ?? line.farmOfferLine.productGroupRaw ?? "",
       variant?.variety ?? line.farmOfferLine.varietyRaw ?? "",
+      variant?.stemLength ?? "",
       variant?.color ?? line.farmOfferLine.colorRaw ?? "",
       variant?.grade ?? line.farmOfferLine.gradeRaw ?? "",
       line.farmOfferLine.treatmentRaw ?? "",
@@ -82,7 +84,7 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
       quote.destination?.city ?? "",
       line.farmOfferLine.notes ?? "",
     ];
-    sheet.getCell(`J${r}`).numFmt = "0.00";
+    sheet.getCell(`K${r}`).numFmt = "0.00";
     r++;
   }
 
@@ -125,7 +127,11 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
     const variant = line.farmOfferLine.productVariant;
     const finalPrice = line.manualSellPricePerStem ?? line.calculatedSellPricePerStem;
     sheet.getRow(r).values = [
-      variant ? `${variant.product.name}${variant.color ? " - " + variant.color : ""}${variant.grade ? " - " + variant.grade : ""}` : line.farmOfferLine.productGroupRaw ?? "",
+      variant
+        ? [variant.product.name, variant.variety, variant.color, variant.grade, variant.stemLength]
+            .filter(Boolean)
+            .join(" - ")
+        : line.farmOfferLine.productGroupRaw ?? "",
       line.farmOfferLine.farmOffer.farm?.name ?? "",
       quote.incoterm,
       Number(line.fobPricePerStem.toString()),

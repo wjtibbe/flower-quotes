@@ -66,7 +66,7 @@ export async function suggestProductVariant(params: {
   });
 
   const scored = variants.map((variant) => {
-    const label = [variant.product.name, variant.variety, variant.color, variant.grade]
+    const label = [variant.product.name, variant.variety, variant.color, variant.grade, variant.stemLength]
       .filter(Boolean)
       .join(" - ");
     const directScore = similarity(query, label);

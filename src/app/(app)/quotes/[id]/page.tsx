@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { quoteForExportInclude } from "@/lib/exports/types";
+import { variantLabel } from "@/lib/variantLabel";
 import CopyButton from "@/components/CopyButton";
 import { overrideQuoteLinePrice, clearQuoteLineOverride, setQuoteStatus, generateExport } from "../actions";
 import { QuoteExportType, QuoteStatus } from "@prisma/client";
@@ -78,7 +79,7 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
               const treatmentSuffix = treatment && treatment.toLowerCase() !== "normal" ? ` (${treatment})` : "";
               const label =
                 (variant
-                  ? `${variant.product.name}${variant.color ? " - " + variant.color : ""}${variant.grade ? " - " + variant.grade : ""}`
+                  ? variantLabel(variant, variant.product.name)
                   : line.farmOfferLine.productGroupRaw ?? line.farmOfferLine.rawText.slice(0, 30)) + treatmentSuffix;
               const finalPrice = line.manualSellPricePerStem ?? line.calculatedSellPricePerStem;
 

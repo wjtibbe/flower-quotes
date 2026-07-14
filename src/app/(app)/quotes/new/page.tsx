@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
+import { variantLabel } from "@/lib/variantLabel";
 import { createQuotes } from "../actions";
 
 export const dynamic = "force-dynamic";
@@ -51,9 +52,7 @@ export default async function NewQuotePage({
                 <tr key={line.id}>
                   <td>
                     {line.productVariant
-                      ? `${line.productVariant.product.name}${line.productVariant.color ? " - " + line.productVariant.color : ""}${
-                          line.productVariant.grade ? " - " + line.productVariant.grade : ""
-                        }`
+                      ? variantLabel(line.productVariant, line.productVariant.product.name)
                       : line.productGroupRaw ?? line.rawText.slice(0, 40)}
                   </td>
                   <td>{line.farmOffer.farm?.name ?? "-"}</td>
