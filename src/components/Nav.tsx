@@ -10,7 +10,6 @@ const SECTIONS: { href: string; label: string }[] = [
   { href: "/quotes", label: "Offertes" },
   { href: "/products", label: "Assortiment" },
   { href: "/farms", label: "Leveranciers" },
-  { href: "/weight-profiles", label: "Gewichtsprofielen" },
   { href: "/routes", label: "Routes & vracht" },
   { href: "/ddp-costs", label: "DDP-kosten" },
   { href: "/customers", label: "Klanten" },

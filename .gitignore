@@ -9,4 +9,6 @@ dist
 /prisma/dev.db-journal
 /storage/uploads/*
 !/storage/uploads/.gitkeep
+/storage/exports/*
+!/storage/exports/.gitkeep
 .DS_Store
