@@ -10,6 +10,8 @@ import {
   toggleRouteActive,
   toggleRouteSupportsCfr,
   toggleRouteSupportsDdp,
+  addRouteCost,
+  toggleRouteCostActive,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -24,7 +26,31 @@ const UNIT_LABELS: Record<string, string> = {
   PER_KG: "per kg",
   PER_BOX: "per doos",
   PER_STEM: "per steel",
+  FLAT: "vast bedrag",
 };
+const CATEGORY_LABELS: Record<string, string> = {
+  CLEARING: "Clearing",
+  INSPECTION: "Inspection",
+  IMPORT: "Import",
+  HANDLING: "Handling",
+  LOCAL_DELIVERY: "Lokale bezorging",
+  DOCUMENTATION: "Documentatie",
+  OTHER: "Overige",
+};
+
+/** The additional cost that pricing would use now: active, valid, newest per (category,name). */
+function currentCosts<
+  T extends { id: string; active: boolean; effectiveFrom: Date; effectiveTo: Date | null; category: string | null; name: string | null },
+>(costs: T[]): Set<string> {
+  const now = new Date();
+  const chosen = new Map<string, string>();
+  for (const c of [...costs].sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())) {
+    if (!c.active || !c.category || c.effectiveFrom > now || (c.effectiveTo && c.effectiveTo < now)) continue;
+    const key = `${c.category}::${(c.name ?? "").toLowerCase()}`;
+    if (!chosen.has(key)) chosen.set(key, c.id);
+  }
+  return new Set(chosen.values());
+}
 
 interface Params {
   from?: string; // vertrekstad
@@ -60,7 +86,12 @@ function currentRate<T extends { active: boolean; effectiveFrom: Date; effective
 export default async function RoutesPage({ searchParams }: { searchParams: Params }) {
   const [routes, origins, destinations] = await Promise.all([
     prisma.route.findMany({
-      include: { origin: true, destination: true, freightRates: { orderBy: { effectiveFrom: "desc" } } },
+      include: {
+        origin: true,
+        destination: true,
+        freightRates: { orderBy: { effectiveFrom: "desc" } },
+        ddpCostRates: { orderBy: [{ category: "asc" }, { effectiveFrom: "desc" }] },
+      },
       orderBy: { createdAt: "asc" },
     }),
     prisma.origin.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
@@ -354,6 +385,99 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                           </button>
                         </form>
                       </div>
+
+                      {(() => {
+                        const activeCostIds = currentCosts(route.ddpCostRates);
+                        return (
+                          <div className="pt-2 border-t border-gray-200 space-y-2">
+                            <div className="font-medium text-gray-700">Aanvullende kosten (DDP)</div>
+                            <table className="table-base">
+                              <thead>
+                                <tr>
+                                  <th>Naam</th>
+                                  <th>Categorie</th>
+                                  <th>Bedrag</th>
+                                  <th>Eenheid</th>
+                                  <th>Geldig van</th>
+                                  <th>Geldig tot</th>
+                                  <th>Status</th>
+                                  <th></th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {route.ddpCostRates.map((c) => (
+                                  <tr key={c.id} className={activeCostIds.has(c.id) ? "font-semibold" : ""}>
+                                    <td>{c.name ?? "-"}</td>
+                                    <td>{c.category ? CATEGORY_LABELS[c.category] : "-"}</td>
+                                    <td>{c.currency} {fmtMoney(c.amount, 4)}</td>
+                                    <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
+                                    <td>{fmtDate(c.effectiveFrom)}</td>
+                                    <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
+                                    <td>
+                                      {activeCostIds.has(c.id) ? (
+                                        <span className="badge-high">in gebruik</span>
+                                      ) : c.active ? (
+                                        <span className="badge bg-gray-100 text-gray-600">actief</span>
+                                      ) : (
+                                        <span className="badge-low">inactief</span>
+                                      )}
+                                    </td>
+                                    <td>
+                                      <form action={toggleRouteCostActive.bind(null, c.id, c.active)}>
+                                        <button className="text-xs text-gray-500 hover:underline">
+                                          {c.active ? "Deactiveren" : "Activeren"}
+                                        </button>
+                                      </form>
+                                    </td>
+                                  </tr>
+                                ))}
+                                {route.ddpCostRates.length === 0 && (
+                                  <tr><td colSpan={8} className="text-gray-400">Nog geen aanvullende kosten.</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+
+                            <form action={addRouteCost.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
+                              <div>
+                                <label className="label">Naam</label>
+                                <input name="name" required className="input py-1 px-2 text-xs w-32" />
+                              </div>
+                              <div>
+                                <label className="label">Categorie</label>
+                                <select name="category" className="input py-1 px-2 text-xs" defaultValue="CLEARING">
+                                  {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="label">Bedrag</label>
+                                <input name="amount" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
+                              </div>
+                              <div>
+                                <label className="label">Valuta</label>
+                                <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue="USD">
+                                  <option value="USD">USD</option>
+                                  <option value="EUR">EUR</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="label">Eenheid</label>
+                                <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_STEM">
+                                  {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="label">Geldig vanaf</label>
+                                <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
+                              </div>
+                              <div>
+                                <label className="label">Geldig tot</label>
+                                <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
+                              </div>
+                              <button className="btn-primary py-1 px-2 text-xs">Kosten toevoegen</button>
+                            </form>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </details>
                 </td>

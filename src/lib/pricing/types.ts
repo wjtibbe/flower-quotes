@@ -12,11 +12,37 @@ export interface ExchangeRateSnapshot {
   rate: Decimal.Value; // 1 baseCurrency = `rate` quoteCurrency
 }
 
-export interface DdpCostInputs {
-  // One combined clearing+inspection price per stem (billed as a single
-  // line item, not itemized separately).
-  clearingAndInspectionPerStem?: Decimal.Value;
-  handlingPerBox?: Decimal.Value;
+export type CostCategory =
+  | "CLEARING"
+  | "INSPECTION"
+  | "IMPORT"
+  | "HANDLING"
+  | "LOCAL_DELIVERY"
+  | "DOCUMENTATION"
+  | "OTHER";
+
+// How an additional-cost amount is expressed. PER_KG needs the box weight;
+// PER_BOX and FLAT divide by stems per box (FLAT = a fixed amount charged per
+// box, allocated across the box's stems); PER_STEM is used as-is.
+export type CostRateUnit = "PER_STEM" | "PER_KG" | "PER_BOX" | "FLAT";
+
+// One additional route cost (clearing, inspection, handling, import, ...),
+// resolved for the current validity date and passed to the engine.
+export interface AdditionalCostInput {
+  name: string;
+  category: CostCategory;
+  amount: Decimal.Value;
+  unit: CostRateUnit;
+}
+
+// Per-stem result of one additional cost, kept in the breakdown/snapshot so
+// every cost line stays individually explainable.
+export interface AdditionalCostResult {
+  name: string;
+  category: CostCategory;
+  amount: string; // original amount
+  unit: CostRateUnit;
+  perStem: string; // converted to cost per stem
 }
 
 export interface PriceLineInput {
@@ -34,8 +60,9 @@ export interface PriceLineInput {
   freightRatePerKg?: Decimal.Value;
   freightRateUnit?: FreightRateUnit;
 
-  // Required for DDP
-  ddp?: DdpCostInputs;
+  // Additional route costs (DDP: clearing/inspection/handling/import/...).
+  // Only applied for the DDP incoterm, matching the previous behaviour.
+  additionalCosts?: AdditionalCostInput[];
 
   // Required whenever sourceCurrency !== targetCurrency
   exchangeRate?: ExchangeRateSnapshot;
@@ -52,8 +79,13 @@ export interface PriceLineBreakdown {
   incoterm: Incoterm;
   fobPricePerStem: Decimal;
   freightPerStem: Decimal;
-  clearingAndInspectionPerStem: Decimal;
-  handlingPerStem: Decimal;
+  // Category subtotals (per stem) kept for backwards-compatible display and
+  // the legacy QuoteLine snapshot columns.
+  clearingAndInspectionPerStem: Decimal; // CLEARING + INSPECTION categories
+  handlingPerStem: Decimal; // HANDLING category
+  otherAdditionalCostPerStem: Decimal; // IMPORT/LOCAL_DELIVERY/DOCUMENTATION/OTHER
+  additionalCostPerStem: Decimal; // total of all additional costs, per stem
+  additionalCosts: AdditionalCostResult[]; // full per-line breakdown
   totalCostPricePerStemSource: Decimal;
   sourceCurrency: CurrencyCode;
   targetCurrency: CurrencyCode;

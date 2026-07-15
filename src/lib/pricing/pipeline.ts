@@ -1,14 +1,17 @@
+import Decimal from "decimal.js";
 import { toMoney, roundTo } from "./decimal";
 import {
+  additionalCostPerStem as calcAdditionalCostPerStem,
   applyMargin,
   convertCurrency,
   costPricePerStemForIncoterm,
   freightPerStemForUnit,
-  handlingPerStem as calcHandlingPerStem,
 } from "./calculations";
 import { isBlocked, validatePriceLineInput } from "./validation";
 import { PricingError } from "./errors";
-import type { PriceLineBreakdown, PriceLineInput } from "./types";
+import type { AdditionalCostResult, CostCategory, PriceLineBreakdown, PriceLineInput } from "./types";
+
+const CLEARING_INSPECTION: CostCategory[] = ["CLEARING", "INSPECTION"];
 
 /**
  * Full pricing pipeline for a single quote line, matching section 11 of the
@@ -38,20 +41,36 @@ export function calculatePriceLine(input: PriceLineInput): PriceLineBreakdown {
           weightPerBoxKg: input.weightPerBoxKg ?? undefined,
         });
 
-  const handling =
+  // Additional costs (clearing/inspection/handling/import/...) are only
+  // applied for DDP, matching the previous behaviour. Each is converted to a
+  // per-stem amount and kept individually for a transparent breakdown.
+  const additionalCosts: AdditionalCostResult[] =
     input.incoterm === "DDP"
-      ? calcHandlingPerStem(input.ddp!.handlingPerBox!, input.stemsPerBox)
-      : toMoney(0);
+      ? (input.additionalCosts ?? []).map((cost) => {
+          const perStem = calcAdditionalCostPerStem(cost, input.stemsPerBox, input.weightPerBoxKg ?? undefined);
+          return {
+            name: cost.name,
+            category: cost.category,
+            amount: toMoney(cost.amount).toString(),
+            unit: cost.unit,
+            perStem: perStem.toString(),
+          };
+        })
+      : [];
 
-  const clearingAndInspection =
-    input.incoterm === "DDP" ? toMoney(input.ddp!.clearingAndInspectionPerStem!) : toMoney(0);
+  const sumBy = (predicate: (c: AdditionalCostResult) => boolean) =>
+    additionalCosts.filter(predicate).reduce((acc, c) => acc.plus(c.perStem), new Decimal(0));
+
+  const clearingAndInspection = sumBy((c) => CLEARING_INSPECTION.includes(c.category));
+  const handling = sumBy((c) => c.category === "HANDLING");
+  const other = sumBy((c) => !CLEARING_INSPECTION.includes(c.category) && c.category !== "HANDLING");
+  const additionalCostTotal = clearingAndInspection.plus(handling).plus(other);
 
   const totalCostPriceSource = costPricePerStemForIncoterm({
     incoterm: input.incoterm,
     fobPricePerStem: input.fobPricePerStem,
     freightPerStemValue: freight,
-    clearingAndInspectionPerStem: clearingAndInspection,
-    handlingPerStemValue: handling,
+    totalAdditionalCostPerStem: additionalCostTotal,
   });
 
   const exchangeRateUsed =
@@ -80,6 +99,9 @@ export function calculatePriceLine(input: PriceLineInput): PriceLineBreakdown {
     freightPerStem: freight,
     clearingAndInspectionPerStem: clearingAndInspection,
     handlingPerStem: handling,
+    otherAdditionalCostPerStem: other,
+    additionalCostPerStem: additionalCostTotal,
+    additionalCosts,
     totalCostPricePerStemSource: totalCostPriceSource,
     sourceCurrency: input.sourceCurrency,
     targetCurrency: input.targetCurrency,

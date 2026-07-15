@@ -101,6 +101,10 @@ export async function createQuotes(formData: FormData): Promise<void> {
             clearingAndInspectionPerStem: breakdown.clearingAndInspectionPerStem.toString(),
             handlingPerBox: null,
             handlingPerStem: breakdown.handlingPerStem.toString(),
+            // Full additional-cost snapshot: total per stem + itemized JSON, so
+            // the quote stays reproducible after route costs change later.
+            additionalCostPerStem: breakdown.additionalCostPerStem.toString(),
+            additionalCostsSnapshot: breakdown.additionalCosts as never,
             costPricePerStemSource: breakdown.totalCostPricePerStemSource.toString(),
             costPricePerStemQuote: breakdown.costPricePerStemTarget.toString(),
             marginPercent: breakdown.marginPercent.toString(),

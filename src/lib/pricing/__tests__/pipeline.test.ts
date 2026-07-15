@@ -49,10 +49,10 @@ describe("calculatePriceLine - DDP with currency conversion", () => {
       weightPerBoxKg: 6.5,
       freightRatePerKg: 3.1,
       stemsPerBox: 40,
-      ddp: {
-        clearingAndInspectionPerStem: 0.03,
-        handlingPerBox: 2.0,
-      },
+      additionalCosts: [
+        { name: "Clearing & inspection", category: "CLEARING", amount: 0.03, unit: "PER_STEM" },
+        { name: "Handling", category: "HANDLING", amount: 2.0, unit: "PER_BOX" },
+      ],
       sourceCurrency: "USD",
       targetCurrency: "EUR",
       exchangeRate: { baseCurrency: "USD", quoteCurrency: "EUR", rate: 0.92 },
@@ -64,6 +64,11 @@ describe("calculatePriceLine - DDP with currency conversion", () => {
     expect(result.freightPerStem.toString()).toBe("0.50375");
     // handling = 2.00/40 = 0.05
     expect(result.handlingPerStem.toString()).toBe("0.05");
+    // clearing&inspection = 0.03 per stem
+    expect(result.clearingAndInspectionPerStem.toString()).toBe("0.03");
+    // total additional = 0.08 per stem, itemized breakdown kept
+    expect(result.additionalCostPerStem.toString()).toBe("0.08");
+    expect(result.additionalCosts).toHaveLength(2);
     // cost (USD) = 0.45 + 0.50375 + 0.03 + 0.05 = 1.03375
     expect(result.totalCostPricePerStemSource.toString()).toBe("1.03375");
     // cost (EUR) = 1.03375 * 0.92 = 0.95105
@@ -114,7 +119,10 @@ describe("calculatePriceLine - missing data / validation blockers", () => {
     weightPerBoxKg: 6.5,
     freightRatePerKg: 3.1,
     stemsPerBox: 40,
-    ddp: { clearingAndInspectionPerStem: 0.03, handlingPerBox: 2.0 },
+    additionalCosts: [
+      { name: "Clearing & inspection", category: "CLEARING", amount: 0.03, unit: "PER_STEM" },
+      { name: "Handling", category: "HANDLING", amount: 2.0, unit: "PER_BOX" },
+    ],
     sourceCurrency: "USD",
     targetCurrency: "USD",
     marginPercent: 20,
@@ -139,8 +147,8 @@ describe("calculatePriceLine - missing data / validation blockers", () => {
     expect(() => calculatePriceLine(input)).toThrow(PricingError);
   });
 
-  it("throws when DDP clearing&inspection/handling are missing", () => {
-    expect(() => calculatePriceLine({ ...base, ddp: {} })).toThrow(PricingError);
+  it("throws when DDP additional costs (clearing/inspection & handling) are missing", () => {
+    expect(() => calculatePriceLine({ ...base, additionalCosts: [] })).toThrow(PricingError);
   });
 
   it("throws when margin is missing", () => {

@@ -12,3 +12,4 @@ dist
 /storage/exports/*
 !/storage/exports/.gitkeep
 .DS_Store
+tsconfig.tsbuildinfo

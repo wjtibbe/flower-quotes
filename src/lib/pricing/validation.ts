@@ -44,17 +44,23 @@ export function validatePriceLineInput(input: PriceLineInput): ValidationIssue[]
   }
 
   if (input.incoterm === "DDP") {
-    if (
-      input.ddp?.clearingAndInspectionPerStem === undefined ||
-      input.ddp?.clearingAndInspectionPerStem === null
-    ) {
+    const costs = input.additionalCosts ?? [];
+    const hasCategory = (cats: string[]) => costs.some((c) => cats.includes(c.category));
+    // Preserve the prior hard blockers: DDP needs at least a clearing/inspection
+    // cost and a handling cost configured on the route.
+    if (!hasCategory(["CLEARING", "INSPECTION"])) {
       issues.push({
         code: "MISSING_DDP_CLEARING_INSPECTION",
-        message: "Clearing & inspection per steel ontbreekt",
+        message: "Clearing/inspection-kosten ontbreken op de route",
       });
     }
-    if (input.ddp?.handlingPerBox === undefined || input.ddp?.handlingPerBox === null) {
-      issues.push({ code: "MISSING_DDP_HANDLING", message: "Handling per doos ontbreekt" });
+    if (!hasCategory(["HANDLING"])) {
+      issues.push({ code: "MISSING_DDP_HANDLING", message: "Handling-kosten ontbreken op de route" });
+    }
+    for (const c of costs) {
+      if (new Decimal(c.amount).isNegative()) {
+        issues.push({ code: "NEGATIVE_PRICE", message: `Kosten "${c.name}" zijn negatief` });
+      }
     }
   }
 

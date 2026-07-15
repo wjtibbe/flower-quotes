@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import type { FreightRateUnit, TransportType } from "@prisma/client";
+import type { CostCategory, CostRateUnit, FreightRateUnit, TransportType } from "@prisma/client";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -111,4 +111,46 @@ export async function toggleRouteSupportsDdp(routeId: string, current: boolean):
   await prisma.route.update({ where: { id: routeId }, data: { supportsDdp: !current } });
   revalidatePath("/routes");
   revalidatePath("/ddp-costs");
+}
+
+// --- Route additional costs (DDP clearing/inspection/handling/import/...) ---
+
+/**
+ * Adds an additional cost line to a route. Multiple costs per route are
+ * allowed; the pricing engine picks, per (category, name), the currently
+ * valid newest one - so a later-dated row supersedes automatically without
+ * touching history.
+ */
+export async function addRouteCost(routeId: string, formData: FormData): Promise<void> {
+  const name = norm(formData.get("name"));
+  const category = norm(formData.get("category")) as CostCategory | null;
+  const rateUnit = norm(formData.get("rateUnit")) as CostRateUnit | null;
+  const amount = norm(formData.get("amount"));
+  const currency = norm(formData.get("currency")) ?? "USD";
+  const effectiveFromRaw = norm(formData.get("effectiveFrom"));
+  const effectiveToRaw = norm(formData.get("effectiveTo"));
+  if (!name || !category || !rateUnit || !amount) {
+    throw new Error("Naam, categorie, rekeneenheid en bedrag zijn verplicht");
+  }
+
+  await prisma.ddpCostRate.create({
+    data: {
+      routeId,
+      name,
+      category,
+      rateUnit,
+      amount,
+      currency,
+      effectiveFrom: effectiveFromRaw ? new Date(effectiveFromRaw) : new Date(),
+      effectiveTo: effectiveToRaw ? new Date(effectiveToRaw) : null,
+      notes: norm(formData.get("notes")),
+    },
+  });
+  revalidatePath("/routes");
+}
+
+/** Deactivates a cost line (kept for history, never selected again). */
+export async function toggleRouteCostActive(id: string, active: boolean): Promise<void> {
+  await prisma.ddpCostRate.update({ where: { id }, data: { active: !active } });
+  revalidatePath("/routes");
 }

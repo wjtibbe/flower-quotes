@@ -9,7 +9,10 @@ const validDdp: PriceLineInput = {
   weightPerBoxKg: 6.5,
   freightRatePerKg: 3.1,
   stemsPerBox: 40,
-  ddp: { clearingAndInspectionPerStem: 0.03, handlingPerBox: 2.0 },
+  additionalCosts: [
+    { name: "Clearing & inspection", category: "CLEARING", amount: 0.03, unit: "PER_STEM" },
+    { name: "Handling", category: "HANDLING", amount: 2.0, unit: "PER_BOX" },
+  ],
   sourceCurrency: "USD",
   targetCurrency: "EUR",
   exchangeRate: { baseCurrency: "USD", quoteCurrency: "EUR", rate: 0.92 },
@@ -27,8 +30,8 @@ describe("validatePriceLineInput", () => {
     ["ZERO_STEMS_PER_BOX", { stemsPerBox: 0 }],
     ["MISSING_WEIGHT", { weightPerBoxKg: undefined }],
     ["MISSING_FREIGHT_RATE", { freightRatePerKg: undefined }],
-    ["MISSING_DDP_CLEARING_INSPECTION", { ddp: { handlingPerBox: 2 } }],
-    ["MISSING_DDP_HANDLING", { ddp: { clearingAndInspectionPerStem: 0.03 } }],
+    ["MISSING_DDP_CLEARING_INSPECTION", { additionalCosts: [{ name: "Handling", category: "HANDLING", amount: 2, unit: "PER_BOX" }] }],
+    ["MISSING_DDP_HANDLING", { additionalCosts: [{ name: "Clearing", category: "CLEARING", amount: 0.03, unit: "PER_STEM" }] }],
     ["MISSING_EXCHANGE_RATE", { exchangeRate: undefined }],
     ["MISSING_MARGIN", { marginPercent: undefined }],
   ] as const)("flags %s when the field is missing", (code, override) => {

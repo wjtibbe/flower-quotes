@@ -267,21 +267,50 @@ enum DdpCostType {
   HANDLING_PER_BOX
 }
 
+// Category of a route additional cost (used for grouping/labels in the
+// transparent calculation). Clearing/inspection/handling are the DDP costs
+// that already existed; the rest are new but slot into the same table.
+enum CostCategory {
+  CLEARING
+  INSPECTION
+  IMPORT
+  HANDLING
+  LOCAL_DELIVERY
+  DOCUMENTATION
+  OTHER
+}
+
+// How an additional-cost amount is expressed. FLAT is a fixed amount charged
+// per box (allocated across the box's stems), so everything converts cleanly
+// to a per-stem cost.
+enum CostRateUnit {
+  PER_STEM
+  PER_KG
+  PER_BOX
+  FLAT
+}
+
 model DdpCostRate {
-  id            String      @id @default(uuid())
+  id            String        @id @default(uuid())
   routeId       String
-  costType      DdpCostType
+  // Legacy discriminator, now optional. New rows use name/category/rateUnit
+  // instead; kept so historical rows and any old readers stay valid.
+  costType      DdpCostType?
+  name          String? // human label, e.g. "Clearing & inspection"
+  category      CostCategory?
+  rateUnit      CostRateUnit?
   currency      String
-  amount        Decimal     @db.Decimal(10, 4)
-  effectiveFrom DateTime    @default(now())
+  amount        Decimal       @db.Decimal(10, 4)
+  effectiveFrom DateTime      @default(now())
   effectiveTo   DateTime?
-  active        Boolean     @default(true)
+  active        Boolean       @default(true)
   notes         String?
-  createdAt     DateTime    @default(now())
-  updatedAt     DateTime    @updatedAt
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
   route Route @relation(fields: [routeId], references: [id])
 
+  @@index([routeId, active])
   @@index([routeId, costType, active])
 }
 
@@ -503,6 +532,10 @@ model QuoteLine {
   clearingAndInspectionPerStem Decimal?         @db.Decimal(12, 6)
   handlingPerBox               Decimal?         @db.Decimal(12, 6)
   handlingPerStem              Decimal?         @db.Decimal(12, 6)
+  // Total of all route additional costs (clearing/inspection/handling/import/
+  // etc.) converted to per stem, plus a JSON breakdown for full transparency.
+  additionalCostPerStem        Decimal?         @db.Decimal(12, 6)
+  additionalCostsSnapshot      Json?
   costPricePerStemSource       Decimal          @db.Decimal(12, 6) // in source currency
   costPricePerStemQuote        Decimal          @db.Decimal(12, 6) // converted to quote currency
   marginPercent                Decimal          @db.Decimal(6, 3)

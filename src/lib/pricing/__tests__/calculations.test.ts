@@ -8,6 +8,7 @@ import {
   freightPerStem,
   freightPerStemForUnit,
   handlingPerStem,
+  additionalCostPerStem,
 } from "../calculations";
 import { PricingError } from "../errors";
 import { roundTo, toMoney } from "../decimal";
@@ -64,18 +65,38 @@ describe("cfrCostPricePerStem", () => {
 });
 
 describe("ddpCostPricePerStem", () => {
-  it("adds FOB + freight + clearing&inspection (handling applied separately in pipeline)", () => {
+  it("adds FOB + freight + total additional costs per stem", () => {
     const freight = freightPerStem(8, 3.0, 40); // 0.60
-    const result = ddpCostPricePerStem(0.45, freight, {
-      clearingAndInspectionPerStem: 0.03,
-    });
+    const result = ddpCostPricePerStem(0.45, freight, 0.03);
     expect(result.toString()).toBe("1.08");
   });
 
-  it("rejects a negative clearing&inspection price", () => {
-    expect(() =>
-      ddpCostPricePerStem(0.45, 0.6, { clearingAndInspectionPerStem: -0.03 }),
-    ).toThrow(PricingError);
+  it("rejects a negative total additional cost", () => {
+    expect(() => ddpCostPricePerStem(0.45, 0.6, -0.03)).toThrow(PricingError);
+  });
+});
+
+describe("additionalCostPerStem", () => {
+  const base = { name: "Test", category: "OTHER" as const };
+  it("PER_STEM uses the amount as-is", () => {
+    expect(additionalCostPerStem({ ...base, amount: 0.02, unit: "PER_STEM" }, 40).toString()).toBe("0.02");
+  });
+  it("PER_KG multiplies by box weight and divides by stems (6.5kg x 0.1 / 40 = 0.01625)", () => {
+    expect(additionalCostPerStem({ ...base, amount: 0.1, unit: "PER_KG" }, 40, 6.5).toString()).toBe("0.01625");
+  });
+  it("PER_BOX divides by stems (2.00 / 40 = 0.05)", () => {
+    expect(additionalCostPerStem({ ...base, amount: 2.0, unit: "PER_BOX" }, 40).toString()).toBe("0.05");
+  });
+  it("FLAT is allocated per box across stems (10 / 40 = 0.25)", () => {
+    expect(additionalCostPerStem({ ...base, amount: 10, unit: "FLAT" }, 40).toString()).toBe("0.25");
+  });
+  it("PER_KG without weight throws MISSING_WEIGHT", () => {
+    try {
+      additionalCostPerStem({ ...base, amount: 0.1, unit: "PER_KG" }, 40);
+      expect.unreachable();
+    } catch (e) {
+      expect((e as PricingError).code).toBe("MISSING_WEIGHT");
+    }
   });
 });
 

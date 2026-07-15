@@ -110,6 +110,7 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
     "Vracht/steel",
     "Clearing & Inspection/steel",
     "Handling/steel",
+    "Overige kosten/steel",
     "Kostprijs/steel (bron)",
     "Wisselkoers",
     "Kostprijs/steel (offertevaluta)",
@@ -138,6 +139,12 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
       decOrZero(line.freightPerStem),
       decOrZero(line.clearingAndInspectionPerStem),
       decOrZero(line.handlingPerStem),
+      Math.max(
+        0,
+        decOrZero(line.additionalCostPerStem) -
+          decOrZero(line.clearingAndInspectionPerStem) -
+          decOrZero(line.handlingPerStem),
+      ),
       Number(line.costPricePerStemSource.toString()),
       quote.exchangeRateValue ? Number(quote.exchangeRateValue.toString()) : "",
       Number(line.costPricePerStemQuote.toString()),

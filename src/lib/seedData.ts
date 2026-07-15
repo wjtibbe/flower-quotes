@@ -17,7 +17,6 @@ import {
   PrismaClient,
   ConfidenceLevel,
   Currency,
-  DdpCostType,
   FarmOfferStatus,
   Incoterm,
   SourceFileType,
@@ -120,12 +119,14 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
     ],
   });
 
-  // DDP cost rates for the Amsterdam routes (DDP is most relevant for the EU customer).
+  // Additional route costs for the Amsterdam routes (DDP is most relevant for
+  // the EU customer). Uses the generalized name/category/rateUnit model.
   for (const route of [quitoAmsterdam, bogotaAmsterdam]) {
     await prisma.ddpCostRate.createMany({
       data: [
-        { routeId: route.id, costType: DdpCostType.CLEARING_AND_INSPECTION_PER_STEM, currency: "USD", amount: "0.0250" },
-        { routeId: route.id, costType: DdpCostType.HANDLING_PER_BOX, currency: "USD", amount: "1.5000" },
+        { routeId: route.id, name: "Clearing & inspection", category: "CLEARING", rateUnit: "PER_STEM", currency: "USD", amount: "0.0250" },
+        { routeId: route.id, name: "Handling", category: "HANDLING", rateUnit: "PER_BOX", currency: "USD", amount: "1.5000" },
+        { routeId: route.id, name: "Documentatie", category: "DOCUMENTATION", rateUnit: "FLAT", currency: "USD", amount: "5.0000" },
       ],
     });
   }

@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { toMoney } from "./decimal";
 import { PricingError } from "./errors";
-import type { CurrencyCode, DdpCostInputs, ExchangeRateSnapshot, FreightRateUnit, Incoterm } from "./types";
+import type { AdditionalCostInput, CurrencyCode, ExchangeRateSnapshot, FreightRateUnit, Incoterm } from "./types";
 
 /**
  * Freight cost per stem.
@@ -76,27 +76,55 @@ export function cfrCostPricePerStem(
 }
 
 /**
- * DDP cost price per stem = FOB + freight + clearing&inspection + handling
+ * Convert one additional cost to a per-stem amount, honouring its unit:
+ *   PER_STEM: amount as-is
+ *   PER_KG:   amount x gewicht per doos / stelen per doos
+ *   PER_BOX:  amount / stelen per doos
+ *   FLAT:     fixed amount per doos, allocated across the box's stems
+ *             (i.e. amount / stelen per doos)
+ */
+export function additionalCostPerStem(
+  cost: AdditionalCostInput,
+  stemsPerBox: number,
+  weightPerBoxKg?: Decimal.Value,
+): Decimal {
+  const amount = toMoney(cost.amount);
+  assertNonNegative(amount, "NEGATIVE_PRICE", `${cost.name} amount`);
+
+  if (cost.unit === "PER_STEM") return amount;
+
+  if (cost.unit === "PER_KG") {
+    if (weightPerBoxKg === undefined) {
+      throw new PricingError("MISSING_WEIGHT", `Box weight is required for the per-kg cost "${cost.name}"`);
+    }
+    return freightPerStem(weightPerBoxKg, amount, stemsPerBox);
+  }
+
+  // PER_BOX and FLAT both allocate a per-box amount across the box's stems.
+  assertPositiveStems(stemsPerBox);
+  return amount.dividedBy(stemsPerBox);
+}
+
+/**
+ * DDP cost price per stem = FOB + freight + all additional costs
  * (all already expressed per stem).
  */
 export function ddpCostPricePerStem(
   fobPricePerStem: Decimal.Value,
   freightPerStemValue: Decimal.Value,
-  ddp: Required<Pick<DdpCostInputs, "clearingAndInspectionPerStem">>,
+  totalAdditionalCostPerStem: Decimal.Value,
 ): Decimal {
-  const clearingAndInspection = toMoney(ddp.clearingAndInspectionPerStem);
-  assertNonNegative(clearingAndInspection, "NEGATIVE_PRICE", "clearingAndInspectionPerStem");
-
-  return cfrCostPricePerStem(fobPricePerStem, freightPerStemValue).plus(clearingAndInspection);
+  const additional = toMoney(totalAdditionalCostPerStem);
+  assertNonNegative(additional, "NEGATIVE_PRICE", "additionalCostPerStem");
+  return cfrCostPricePerStem(fobPricePerStem, freightPerStemValue).plus(additional);
 }
 
-/** Dispatch cost-price calculation based on incoterm. */
+/** Dispatch cost-price calculation based on incoterm (all inputs per stem). */
 export function costPricePerStemForIncoterm(params: {
   incoterm: Incoterm;
   fobPricePerStem: Decimal.Value;
   freightPerStemValue?: Decimal.Value;
-  clearingAndInspectionPerStem?: Decimal.Value;
-  handlingPerStemValue?: Decimal.Value;
+  totalAdditionalCostPerStem?: Decimal.Value;
 }): Decimal {
   const { incoterm, fobPricePerStem } = params;
 
@@ -113,19 +141,11 @@ export function costPricePerStemForIncoterm(params: {
   }
 
   // DDP
-  if (params.clearingAndInspectionPerStem === undefined) {
-    throw new PricingError(
-      "MISSING_DDP_CLEARING_INSPECTION",
-      "Clearing & inspection per stem is required for DDP",
-    );
-  }
-  if (params.handlingPerStemValue === undefined) {
-    throw new PricingError("MISSING_DDP_HANDLING", "Handling per stem is required for DDP");
-  }
-
-  return ddpCostPricePerStem(fobPricePerStem, params.freightPerStemValue, {
-    clearingAndInspectionPerStem: params.clearingAndInspectionPerStem,
-  }).plus(toMoney(params.handlingPerStemValue));
+  return ddpCostPricePerStem(
+    fobPricePerStem,
+    params.freightPerStemValue,
+    params.totalAdditionalCostPerStem ?? 0,
+  );
 }
 
 /**

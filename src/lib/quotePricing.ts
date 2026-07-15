@@ -3,13 +3,16 @@ import { prisma } from "@/lib/db";
 import {
   calculatePriceLine,
   validatePriceLineInput,
+  type AdditionalCostInput,
+  type CostCategory,
+  type CostRateUnit,
   type CurrencyCode,
   type ExchangeRateSnapshot,
   type Incoterm,
   type PriceLineBreakdown,
   type ValidationIssue,
 } from "@/lib/pricing";
-import type { FarmOfferLine, Customer, DdpCostType, FreightRateUnit } from "@prisma/client";
+import type { FarmOfferLine, Customer, FreightRateUnit } from "@prisma/client";
 
 export interface ResolvedPricingContext {
   originId: string | null;
@@ -19,7 +22,7 @@ export interface ResolvedPricingContext {
   freightRatePerKg: string | null; // rate amount (legacy name; unit below)
   freightRateUnit: FreightRateUnit | null;
   freightRateUpdatedAt: Date | null;
-  ddp: { clearingAndInspectionPerStem: string | null; handlingPerBox: string | null };
+  additionalCosts: AdditionalCostInput[]; // route additional costs, valid now
   exchangeRate: ExchangeRateSnapshot | null;
 }
 
@@ -54,10 +57,7 @@ export async function resolvePricingContext(
   let freightRatePerKg: string | null = null;
   let freightRateUnit: FreightRateUnit | null = null;
   let freightRateUpdatedAt: Date | null = null;
-  const ddp: ResolvedPricingContext["ddp"] = {
-    clearingAndInspectionPerStem: null,
-    handlingPerBox: null,
-  };
+  let additionalCosts: AdditionalCostInput[] = [];
 
   if (originId && destinationId) {
     // A route may exist per transport type; flower freight is priced on the
@@ -94,13 +94,7 @@ export async function resolvePricingContext(
       }
 
       if (incoterm === "DDP") {
-        const rates = await prisma.ddpCostRate.findMany({ where: { routeId: route.id, active: true } });
-        for (const r of rates) {
-          if (r.costType === ("CLEARING_AND_INSPECTION_PER_STEM" as DdpCostType)) {
-            ddp.clearingAndInspectionPerStem = r.amount.toString();
-          }
-          if (r.costType === ("HANDLING_PER_BOX" as DdpCostType)) ddp.handlingPerBox = r.amount.toString();
-        }
+        additionalCosts = await resolveAdditionalCosts(route.id);
       }
     }
   }
@@ -121,9 +115,44 @@ export async function resolvePricingContext(
     freightRatePerKg,
     freightRateUnit,
     freightRateUpdatedAt,
-    ddp,
+    additionalCosts,
     exchangeRate,
   };
+}
+
+/**
+ * Resolves the route's additional costs that are valid right now. Cost lines
+ * are grouped by (category, name); within each group the currently-valid,
+ * newest-effectiveFrom active row wins - so multiple costs coexist, a
+ * future-dated row supersedes automatically, and deactivating a row drops it.
+ * A legacy row without category/rateUnit (only costType) is skipped by the
+ * new UI path but still resolvable via its backfilled fields.
+ */
+async function resolveAdditionalCosts(routeId: string): Promise<AdditionalCostInput[]> {
+  const now = new Date();
+  const rows = await prisma.ddpCostRate.findMany({
+    where: {
+      routeId,
+      active: true,
+      effectiveFrom: { lte: now },
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+    },
+    orderBy: { effectiveFrom: "desc" },
+  });
+
+  const chosen = new Map<string, AdditionalCostInput>();
+  for (const r of rows) {
+    if (!r.category || !r.rateUnit) continue; // needs the generalized fields
+    const key = `${r.category}::${(r.name ?? "").toLowerCase()}`;
+    if (chosen.has(key)) continue; // newest effectiveFrom already taken
+    chosen.set(key, {
+      name: r.name ?? r.category,
+      category: r.category as CostCategory,
+      amount: r.amount.toString(),
+      unit: r.rateUnit as CostRateUnit,
+    });
+  }
+  return [...chosen.values()];
 }
 
 async function findExchangeRate(from: CurrencyCode, to: CurrencyCode) {
@@ -177,10 +206,7 @@ export async function priceLineForCustomer(
     weightPerBoxKg: line.weightPerBoxKg?.toString() ?? undefined,
     freightRatePerKg: context.freightRatePerKg ?? undefined,
     freightRateUnit: context.freightRateUnit ?? undefined,
-    ddp: {
-      clearingAndInspectionPerStem: context.ddp.clearingAndInspectionPerStem ?? undefined,
-      handlingPerBox: context.ddp.handlingPerBox ?? undefined,
-    },
+    additionalCosts: context.additionalCosts,
     exchangeRate: context.exchangeRate ?? undefined,
   } as Parameters<typeof calculatePriceLine>[0];
 

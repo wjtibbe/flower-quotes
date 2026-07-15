@@ -64,6 +64,7 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
               <th>Vracht</th>
               <th>Clearing & Inspection</th>
               <th>Handling</th>
+              <th>Overige kosten</th>
               <th>Kostprijs (bron)</th>
               <th>Kostprijs ({quote.currency})</th>
               <th>Marge</th>
@@ -82,6 +83,14 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
                   ? variantLabel(variant, variant.product.name)
                   : line.farmOfferLine.productGroupRaw ?? line.farmOfferLine.rawText.slice(0, 30)) + treatmentSuffix;
               const finalPrice = line.manualSellPricePerStem ?? line.calculatedSellPricePerStem;
+              // "Overige kosten" = total additional minus the itemized clearing&inspection + handling.
+              const clearingInsp = Number(line.clearingAndInspectionPerStem ?? 0);
+              const handling = Number(line.handlingPerStem ?? 0);
+              const additionalTotal = Number(line.additionalCostPerStem ?? clearingInsp + handling);
+              const other = Math.max(0, additionalTotal - clearingInsp - handling);
+              const costItems = Array.isArray(line.additionalCostsSnapshot)
+                ? (line.additionalCostsSnapshot as { name: string; unit: string; perStem: string }[])
+                : [];
 
               return (
                 <tr key={line.id}>
@@ -90,6 +99,21 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
                   <td>{fmtMoney(line.freightPerStem, 4)}</td>
                   <td>{fmtMoney(line.clearingAndInspectionPerStem, 4)}</td>
                   <td>{fmtMoney(line.handlingPerStem, 4)}</td>
+                  <td>
+                    {fmtMoney(other, 4)}
+                    {costItems.length > 0 && (
+                      <details className="inline-block ml-1">
+                        <summary className="text-xs text-brand-600 cursor-pointer inline">specificatie</summary>
+                        <div className="absolute z-10 mt-1 bg-white border border-gray-200 rounded shadow p-2 text-xs">
+                          {costItems.map((c, i) => (
+                            <div key={i} className="whitespace-nowrap">
+                              {c.name}: {fmtMoney(c.perStem, 4)}/steel
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
+                  </td>
                   <td>{fmtMoney(line.costPricePerStemSource, 4)}</td>
                   <td>{fmtMoney(line.costPricePerStemQuote, 4)}</td>
                   <td>{fmtMoney(line.marginPercent, 1)}%</td>
