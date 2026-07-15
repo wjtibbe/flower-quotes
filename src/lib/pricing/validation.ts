@@ -23,9 +23,16 @@ export function validatePriceLineInput(input: PriceLineInput): ValidationIssue[]
   }
 
   if (input.incoterm === "CFR" || input.incoterm === "DDP") {
-    if (input.weightPerBoxKg === undefined || input.weightPerBoxKg === null) {
+    // Box weight is only needed to convert a per-kg rate to freight per stem;
+    // per-box and per-stem rates don't use it.
+    const rateUnit = input.freightRateUnit ?? "PER_KG";
+    if (rateUnit === "PER_KG" && (input.weightPerBoxKg === undefined || input.weightPerBoxKg === null)) {
       issues.push({ code: "MISSING_WEIGHT", message: "Gewicht per doos ontbreekt" });
-    } else if (new Decimal(input.weightPerBoxKg).isNegative()) {
+    } else if (
+      input.weightPerBoxKg !== undefined &&
+      input.weightPerBoxKg !== null &&
+      new Decimal(input.weightPerBoxKg).isNegative()
+    ) {
       issues.push({ code: "NEGATIVE_WEIGHT", message: "Gewicht per doos is negatief" });
     }
 

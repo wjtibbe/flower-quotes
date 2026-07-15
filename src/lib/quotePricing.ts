@@ -9,14 +9,15 @@ import {
   type PriceLineBreakdown,
   type ValidationIssue,
 } from "@/lib/pricing";
-import type { FarmOfferLine, Customer, DdpCostType } from "@prisma/client";
+import type { FarmOfferLine, Customer, DdpCostType, FreightRateUnit } from "@prisma/client";
 
 export interface ResolvedPricingContext {
   originId: string | null;
   destinationId: string | null;
   routeId: string | null;
   routeSupportsIncoterm: boolean; // false if the route exists but doesn't offer this incoterm
-  freightRatePerKg: string | null;
+  freightRatePerKg: string | null; // rate amount (legacy name; unit below)
+  freightRateUnit: FreightRateUnit | null;
   freightRateUpdatedAt: Date | null;
   ddp: { clearingAndInspectionPerStem: string | null; handlingPerBox: string | null };
   exchangeRate: ExchangeRateSnapshot | null;
@@ -35,12 +36,23 @@ export async function resolvePricingContext(
   customer: Customer,
   incoterm: Incoterm,
 ): Promise<ResolvedPricingContext> {
-  const originId = line.originId;
+  // Compatibility fallback: parsed lines usually have no explicit originId -
+  // fall back to the supplier's configured origin, so uploaded offers can be
+  // priced C&F/DDP without manually setting an origin per line.
+  let originId = line.originId;
+  if (!originId) {
+    const offer = await prisma.farmOffer.findUnique({
+      where: { id: line.farmOfferId },
+      select: { farm: { select: { originId: true } } },
+    });
+    originId = offer?.farm?.originId ?? null;
+  }
   const destinationId = customer.destinationId;
 
   let routeId: string | null = null;
   let routeSupportsIncoterm = true;
   let freightRatePerKg: string | null = null;
+  let freightRateUnit: FreightRateUnit | null = null;
   let freightRateUpdatedAt: Date | null = null;
   const ddp: ResolvedPricingContext["ddp"] = {
     clearingAndInspectionPerStem: null,
@@ -48,19 +60,35 @@ export async function resolvePricingContext(
   };
 
   if (originId && destinationId) {
-    const route = await prisma.route.findUnique({ where: { originId_destinationId: { originId, destinationId } } });
+    // A route may exist per transport type; flower freight is priced on the
+    // air route when there is one, otherwise the first active alternative.
+    const routes = await prisma.route.findMany({
+      where: { originId, destinationId, active: true },
+      orderBy: { createdAt: "asc" },
+    });
+    const route = routes.find((r) => r.transportType === "AIR") ?? routes[0];
     if (route) {
       routeId = route.id;
       if (incoterm === "CFR" && !route.supportsCfr) routeSupportsIncoterm = false;
       if (incoterm === "DDP" && !route.supportsDdp) routeSupportsIncoterm = false;
 
       if (incoterm === "CFR" || incoterm === "DDP") {
+        // The applicable rate: active, already effective, not yet expired;
+        // the most recently effective one wins. A future-dated rate is not
+        // used until its effectiveFrom passes.
+        const now = new Date();
         const rate = await prisma.freightRate.findFirst({
-          where: { routeId: route.id, active: true },
+          where: {
+            routeId: route.id,
+            active: true,
+            effectiveFrom: { lte: now },
+            OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
+          },
           orderBy: { effectiveFrom: "desc" },
         });
         if (rate) {
           freightRatePerKg = rate.ratePerKg.toString();
+          freightRateUnit = rate.rateUnit;
           freightRateUpdatedAt = rate.updatedAt;
         }
       }
@@ -91,6 +119,7 @@ export async function resolvePricingContext(
     routeId,
     routeSupportsIncoterm,
     freightRatePerKg,
+    freightRateUnit,
     freightRateUpdatedAt,
     ddp,
     exchangeRate,
@@ -147,6 +176,7 @@ export async function priceLineForCustomer(
     marginPercent,
     weightPerBoxKg: line.weightPerBoxKg?.toString() ?? undefined,
     freightRatePerKg: context.freightRatePerKg ?? undefined,
+    freightRateUnit: context.freightRateUnit ?? undefined,
     ddp: {
       clearingAndInspectionPerStem: context.ddp.clearingAndInspectionPerStem ?? undefined,
       handlingPerBox: context.ddp.handlingPerBox ?? undefined,

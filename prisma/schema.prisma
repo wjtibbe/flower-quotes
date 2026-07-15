@@ -162,11 +162,13 @@ model PackagingWeightProfile {
 // ---------------------------------------------------------------------------
 
 model Origin {
-  id        String   @id @default(uuid())
-  city      String
-  country   String
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  city         String
+  country      String
+  locationName String? // airport or pickup location, e.g. "Mariscal Sucre Intl."
+  code         String? // IATA or internal location code, e.g. "UIO"
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
 
   farms          Farm[]
   routes         Route[]
@@ -177,11 +179,13 @@ model Origin {
 }
 
 model Destination {
-  id        String   @id @default(uuid())
-  city      String
-  country   String
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  id           String   @id @default(uuid())
+  city         String
+  country      String
+  locationName String? // airport or delivery location
+  code         String? // IATA or internal location code, e.g. "DXB"
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
 
   routes    Route[]
   customers Customer[]
@@ -190,37 +194,57 @@ model Destination {
   @@unique([city, country])
 }
 
+enum TransportType {
+  AIR // luchtvracht (the default for flowers)
+  ROAD // wegtransport
+  LOCAL_DELIVERY // lokale bezorging
+  SEA
+}
+
 model Route {
-  id            String   @id @default(uuid())
+  id            String        @id @default(uuid())
   originId      String
   destinationId String
+  transportType TransportType @default(AIR)
   // Not every route is offered under every incoterm (e.g. a route without a
   // customs broker relationship might never be quoted DDP). FOB has no
   // route-level flag - it never depends on freight/DDP data being present.
-  supportsCfr   Boolean  @default(true)
-  supportsDdp   Boolean  @default(true)
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  supportsCfr   Boolean       @default(true)
+  supportsDdp   Boolean       @default(true)
+  active        Boolean       @default(true)
+  createdAt     DateTime      @default(now())
 
   origin       Origin        @relation(fields: [originId], references: [id])
   destination  Destination   @relation(fields: [destinationId], references: [id])
   freightRates FreightRate[]
   ddpCostRates DdpCostRate[]
 
-  @@unique([originId, destinationId])
+  @@unique([originId, destinationId, transportType])
+}
+
+// How a freight rate amount is expressed. The engine converts everything to
+// freight-per-stem: PER_KG uses box weight, PER_BOX divides by stems/box,
+// PER_STEM is used as-is.
+enum FreightRateUnit {
+  PER_KG
+  PER_BOX
+  PER_STEM
 }
 
 model FreightRate {
-  id            String    @id @default(uuid())
+  id            String          @id @default(uuid())
   routeId       String
   currency      String // ISO code, e.g. USD
-  ratePerKg     Decimal   @db.Decimal(10, 4)
-  effectiveFrom DateTime  @default(now())
+  // Legacy column name - holds the rate amount in whatever unit rateUnit says
+  // (kept as "ratePerKg" for backwards compatibility; PER_KG is the default).
+  ratePerKg     Decimal         @db.Decimal(10, 4)
+  rateUnit      FreightRateUnit @default(PER_KG)
+  effectiveFrom DateTime        @default(now())
   effectiveTo   DateTime?
-  active        Boolean   @default(true)
+  active        Boolean         @default(true)
   notes         String?
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
 
   route Route @relation(fields: [routeId], references: [id])
 
@@ -464,24 +488,25 @@ model QuoteLine {
 
   // Snapshot of the inputs used for this calculation (so history is reproducible
   // even if the underlying farm offer, weight profile or rate changes later)
-  fobPricePerStem            Decimal  @db.Decimal(10, 6)
-  sourceCurrency             Currency
-  weightPerBoxKg             Decimal? @db.Decimal(10, 3)
-  stemsPerBox                Int
-  freightRatePerKg           Decimal? @db.Decimal(10, 4)
-  freightPerStem             Decimal? @db.Decimal(12, 6)
+  fobPricePerStem              Decimal          @db.Decimal(10, 6)
+  sourceCurrency               Currency
+  weightPerBoxKg               Decimal?         @db.Decimal(10, 3)
+  stemsPerBox                  Int
+  freightRatePerKg             Decimal?         @db.Decimal(10, 4) // rate amount used (unit in freightRateUnit)
+  freightRateUnit              FreightRateUnit?
+  freightPerStem               Decimal?         @db.Decimal(12, 6)
   // Legacy: clearing and inspection used to be billed as two separate line
   // items. New quotes only populate clearingAndInspectionPerStem; the two
   // old columns stay nullable for older quotes' history.
-  clearingPerStem            Decimal? @db.Decimal(12, 6)
-  inspectionPerStem          Decimal? @db.Decimal(12, 6)
-  clearingAndInspectionPerStem Decimal? @db.Decimal(12, 6)
-  handlingPerBox             Decimal? @db.Decimal(12, 6)
-  handlingPerStem            Decimal? @db.Decimal(12, 6)
-  costPricePerStemSource     Decimal  @db.Decimal(12, 6) // in source currency
-  costPricePerStemQuote      Decimal  @db.Decimal(12, 6) // converted to quote currency
-  marginPercent              Decimal  @db.Decimal(6, 3)
-  calculatedSellPricePerStem Decimal  @db.Decimal(12, 6)
+  clearingPerStem              Decimal?         @db.Decimal(12, 6)
+  inspectionPerStem            Decimal?         @db.Decimal(12, 6)
+  clearingAndInspectionPerStem Decimal?         @db.Decimal(12, 6)
+  handlingPerBox               Decimal?         @db.Decimal(12, 6)
+  handlingPerStem              Decimal?         @db.Decimal(12, 6)
+  costPricePerStemSource       Decimal          @db.Decimal(12, 6) // in source currency
+  costPricePerStemQuote        Decimal          @db.Decimal(12, 6) // converted to quote currency
+  marginPercent                Decimal          @db.Decimal(6, 3)
+  calculatedSellPricePerStem   Decimal          @db.Decimal(12, 6)
 
   manualSellPricePerStem Decimal? @db.Decimal(12, 6)
   isManualOverride       Boolean  @default(false)

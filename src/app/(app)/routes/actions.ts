@@ -1,45 +1,102 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
+import type { FreightRateUnit, TransportType } from "@prisma/client";
 
+function norm(v: FormDataEntryValue | null): string | null {
+  const s = String(v ?? "").trim();
+  return s === "" ? null : s;
+}
+
+/** Creates an origin location; case-insensitive duplicate check on city+country. */
+export async function createOrigin(formData: FormData): Promise<void> {
+  const city = norm(formData.get("city"));
+  const country = norm(formData.get("country"));
+  if (!city || !country) throw new Error("Stad en land zijn verplicht");
+
+  const existing = await prisma.origin.findFirst({
+    where: { city: { equals: city, mode: "insensitive" }, country: { equals: country, mode: "insensitive" } },
+  });
+  if (existing) redirect("/routes?msg=origin-exists");
+
+  await prisma.origin.create({
+    data: { city, country, locationName: norm(formData.get("locationName")), code: norm(formData.get("code"))?.toUpperCase() },
+  });
+  revalidatePath("/routes");
+  redirect("/routes?msg=origin-created");
+}
+
+/** Creates a destination location; case-insensitive duplicate check on city+country. */
+export async function createDestination(formData: FormData): Promise<void> {
+  const city = norm(formData.get("city"));
+  const country = norm(formData.get("country"));
+  if (!city || !country) throw new Error("Stad en land zijn verplicht");
+
+  const existing = await prisma.destination.findFirst({
+    where: { city: { equals: city, mode: "insensitive" }, country: { equals: country, mode: "insensitive" } },
+  });
+  if (existing) redirect("/routes?msg=destination-exists");
+
+  await prisma.destination.create({
+    data: { city, country, locationName: norm(formData.get("locationName")), code: norm(formData.get("code"))?.toUpperCase() },
+  });
+  revalidatePath("/routes");
+  redirect("/routes?msg=destination-created");
+}
+
+/** Creates a route (origin + destination + transport type); duplicate-safe. */
 export async function createRoute(formData: FormData): Promise<void> {
-  const originId = String(formData.get("originId") ?? "");
-  const destinationId = String(formData.get("destinationId") ?? "");
+  const originId = norm(formData.get("originId"));
+  const destinationId = norm(formData.get("destinationId"));
+  const transportType = (norm(formData.get("transportType")) ?? "AIR") as TransportType;
   if (!originId || !destinationId) throw new Error("Vertrekpunt en bestemming zijn verplicht");
 
-  await prisma.route.upsert({
-    where: { originId_destinationId: { originId, destinationId } },
-    update: {},
-    create: { originId, destinationId },
+  const existing = await prisma.route.findFirst({ where: { originId, destinationId, transportType } });
+  if (existing) redirect("/routes?msg=route-exists");
+
+  await prisma.route.create({ data: { originId, destinationId, transportType } });
+  revalidatePath("/routes");
+  redirect("/routes?msg=route-created");
+}
+
+/**
+ * Adds a freight rate to a route. Multiple rates per route are allowed -
+ * pricing picks the active rate whose validity window contains "now", newest
+ * effectiveFrom first, so adding a rate with a later start date supersedes
+ * the previous one automatically without touching history.
+ */
+export async function addFreightRate(routeId: string, formData: FormData): Promise<void> {
+  const amount = norm(formData.get("ratePerKg"));
+  const currency = norm(formData.get("currency")) ?? "USD";
+  const rateUnit = (norm(formData.get("rateUnit")) ?? "PER_KG") as FreightRateUnit;
+  const effectiveFromRaw = norm(formData.get("effectiveFrom"));
+  const effectiveToRaw = norm(formData.get("effectiveTo"));
+  if (!amount) throw new Error("Tarief is verplicht");
+
+  await prisma.freightRate.create({
+    data: {
+      routeId,
+      ratePerKg: amount, // legacy column name; holds the amount in `rateUnit`
+      currency,
+      rateUnit,
+      effectiveFrom: effectiveFromRaw ? new Date(effectiveFromRaw) : new Date(),
+      effectiveTo: effectiveToRaw ? new Date(effectiveToRaw) : null,
+      notes: norm(formData.get("notes")),
+    },
   });
   revalidatePath("/routes");
 }
 
-/**
- * Sets the freight rate for a route. There is exactly one rate per route -
- * no history, no start/end dates. Editing overwrites the existing rate in
- * place; if the route has no rate yet, one is created.
- */
-export async function setFreightRate(routeId: string, formData: FormData): Promise<void> {
-  const ratePerKg = String(formData.get("ratePerKg") ?? "");
-  const currency = String(formData.get("currency") ?? "USD");
-  const notes = (formData.get("notes") as string) || null;
-  if (!ratePerKg) throw new Error("Tarief per kg is verplicht");
+/** Deactivates a rate (kept for history, never selected again). */
+export async function toggleFreightRateActive(id: string, active: boolean): Promise<void> {
+  await prisma.freightRate.update({ where: { id }, data: { active: !active } });
+  revalidatePath("/routes");
+}
 
-  const existing = await prisma.freightRate.findFirst({
-    where: { routeId, active: true },
-    orderBy: { effectiveFrom: "desc" },
-  });
-
-  if (existing) {
-    await prisma.freightRate.update({
-      where: { id: existing.id },
-      data: { ratePerKg, currency, notes, effectiveTo: null },
-    });
-  } else {
-    await prisma.freightRate.create({ data: { routeId, ratePerKg, currency, notes } });
-  }
+export async function toggleRouteActive(routeId: string, current: boolean): Promise<void> {
+  await prisma.route.update({ where: { id: routeId }, data: { active: !current } });
   revalidatePath("/routes");
 }
 

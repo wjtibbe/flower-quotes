@@ -6,6 +6,7 @@ import {
   ddpCostPricePerStem,
   fobCostPricePerStem,
   freightPerStem,
+  freightPerStemForUnit,
   handlingPerStem,
 } from "../calculations";
 import { PricingError } from "../errors";
@@ -127,5 +128,35 @@ describe("rounding", () => {
   it("keeps at least 6 decimals of precision internally before rounding", () => {
     const value = toMoney(1).dividedBy(3); // 0.333333333...
     expect(value.toDecimalPlaces(6).toString()).toBe("0.333333");
+  });
+});
+
+describe("freightPerStemForUnit", () => {
+  it("PER_KG matches the classic weight-based calculation (8kg, $3/kg, 40 stems -> $0.60)", () => {
+    const result = freightPerStemForUnit({ rate: 3.0, unit: "PER_KG", stemsPerBox: 40, weightPerBoxKg: 8 });
+    expect(result.toString()).toBe("0.6");
+  });
+
+  it("PER_BOX divides the box rate by stems per box ($24/box, 40 stems -> $0.60)", () => {
+    const result = freightPerStemForUnit({ rate: 24, unit: "PER_BOX", stemsPerBox: 40 });
+    expect(result.toString()).toBe("0.6");
+  });
+
+  it("PER_STEM uses the rate as-is and ignores weight", () => {
+    const result = freightPerStemForUnit({ rate: 0.6, unit: "PER_STEM", stemsPerBox: 40 });
+    expect(result.toString()).toBe("0.6");
+  });
+
+  it("PER_KG without a weight throws MISSING_WEIGHT", () => {
+    try {
+      freightPerStemForUnit({ rate: 3.0, unit: "PER_KG", stemsPerBox: 40 });
+      expect.unreachable();
+    } catch (e) {
+      expect((e as PricingError).code).toBe("MISSING_WEIGHT");
+    }
+  });
+
+  it("PER_BOX with zero stems per box throws DIVISION_BY_ZERO", () => {
+    expect(() => freightPerStemForUnit({ rate: 24, unit: "PER_BOX", stemsPerBox: 0 })).toThrow(PricingError);
   });
 });

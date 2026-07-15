@@ -2,6 +2,9 @@ import type Decimal from "decimal.js";
 
 export type Incoterm = "FOB" | "CFR" | "DDP";
 export type CurrencyCode = "USD" | "EUR";
+// How a freight rate amount is expressed. PER_KG needs the box weight,
+// PER_BOX divides by stems per box, PER_STEM is used as-is.
+export type FreightRateUnit = "PER_KG" | "PER_BOX" | "PER_STEM";
 
 export interface ExchangeRateSnapshot {
   baseCurrency: CurrencyCode;
@@ -24,9 +27,12 @@ export interface PriceLineInput {
   stemsPerBox: number;
   marginPercent: Decimal.Value;
 
-  // Required for CFR/DDP
+  // Required for CFR/DDP. `freightRatePerKg` is the legacy name for the rate
+  // amount - its unit is `freightRateUnit` (default PER_KG). The box weight
+  // is only required when the unit is PER_KG.
   weightPerBoxKg?: Decimal.Value;
   freightRatePerKg?: Decimal.Value;
+  freightRateUnit?: FreightRateUnit;
 
   // Required for DDP
   ddp?: DdpCostInputs;

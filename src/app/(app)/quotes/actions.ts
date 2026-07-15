@@ -46,12 +46,13 @@ export async function createQuotes(formData: FormData): Promise<void> {
     const priced: {
       line: (typeof lines)[number];
       breakdown: NonNullable<Awaited<ReturnType<typeof priceLineForCustomer>>["breakdown"]>;
+      context: Awaited<ReturnType<typeof priceLineForCustomer>>["context"];
     }[] = [];
 
     for (const line of lines) {
       const result = await priceLineForCustomer(line, customer, incoterm, currency, marginPercent);
       if (result.breakdown) {
-        priced.push({ line, breakdown: result.breakdown });
+        priced.push({ line, breakdown: result.breakdown, context: result.context });
       } else {
         // Lines that fail validation (missing FOB, missing weight, missing
         // freight rate, incoterm not offered on this route, etc.) are
@@ -67,7 +68,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
     if (priced.length === 0) continue;
 
     const quoteNumber = await generateQuoteNumber();
-    const firstOrigin = priced.find((p) => p.line.originId)?.line.originId ?? null;
+    const firstOrigin = priced.find((p) => p.context.originId)?.context.originId ?? null;
     const exchangeRateUsed = priced.find((p) => p.breakdown.exchangeRateUsed)?.breakdown;
 
     const quote = await prisma.quote.create({
@@ -86,13 +87,16 @@ export async function createQuotes(formData: FormData): Promise<void> {
         status: QuoteStatus.CONCEPT,
         createdById: userId,
         lines: {
-          create: priced.map(({ line, breakdown }) => ({
+          create: priced.map(({ line, breakdown, context }) => ({
             farmOfferLineId: line.id,
             fobPricePerStem: breakdown.fobPricePerStem.toString(),
             sourceCurrency: line.currency,
             weightPerBoxKg: line.weightPerBoxKg,
             stemsPerBox: line.stemsPerBox!,
-            freightRatePerKg: null,
+            // Snapshot of the freight rate actually used, so the quote stays
+            // explainable even after the route's rates change later.
+            freightRatePerKg: context.freightRatePerKg,
+            freightRateUnit: context.freightRateUnit,
             freightPerStem: breakdown.freightPerStem.toString(),
             clearingAndInspectionPerStem: breakdown.clearingAndInspectionPerStem.toString(),
             handlingPerBox: null,

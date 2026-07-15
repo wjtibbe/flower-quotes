@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { toMoney } from "./decimal";
 import { PricingError } from "./errors";
-import type { CurrencyCode, DdpCostInputs, ExchangeRateSnapshot, Incoterm } from "./types";
+import type { CurrencyCode, DdpCostInputs, ExchangeRateSnapshot, FreightRateUnit, Incoterm } from "./types";
 
 /**
  * Freight cost per stem.
@@ -21,6 +21,32 @@ export function freightPerStem(
 
   const perBox = weight.times(rate);
   return perBox.dividedBy(stemsPerBox);
+}
+
+/**
+ * Freight cost per stem for any rate unit:
+ *   PER_KG:   gewicht per doos x tarief / stelen per doos
+ *   PER_BOX:  tarief / stelen per doos
+ *   PER_STEM: tarief
+ */
+export function freightPerStemForUnit(params: {
+  rate: Decimal.Value;
+  unit: FreightRateUnit;
+  stemsPerBox: number;
+  weightPerBoxKg?: Decimal.Value;
+}): Decimal {
+  const { rate, unit, stemsPerBox, weightPerBoxKg } = params;
+  if (unit === "PER_KG") {
+    if (weightPerBoxKg === undefined) {
+      throw new PricingError("MISSING_WEIGHT", "Box weight is required for a per-kg freight rate");
+    }
+    return freightPerStem(weightPerBoxKg, rate, stemsPerBox);
+  }
+
+  assertPositiveStems(stemsPerBox);
+  const amount = toMoney(rate);
+  assertNonNegative(amount, "NEGATIVE_PRICE", "freightRate");
+  return unit === "PER_BOX" ? amount.dividedBy(stemsPerBox) : amount;
 }
 
 /**

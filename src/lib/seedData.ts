@@ -60,33 +60,35 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
   const quito = await prisma.origin.upsert({
     where: { city_country: { city: "Quito", country: "Ecuador" } },
     update: {},
-    create: { city: "Quito", country: "Ecuador" },
+    create: { city: "Quito", country: "Ecuador", code: "UIO" },
   });
   const bogota = await prisma.origin.upsert({
     where: { city_country: { city: "Bogotá", country: "Colombia" } },
     update: {},
-    create: { city: "Bogotá", country: "Colombia" },
+    create: { city: "Bogotá", country: "Colombia", code: "BOG" },
   });
 
   const doha = await prisma.destination.upsert({
     where: { city_country: { city: "Doha", country: "Qatar" } },
     update: {},
-    create: { city: "Doha", country: "Qatar" },
+    create: { city: "Doha", country: "Qatar", code: "DOH" },
   });
   const dubai = await prisma.destination.upsert({
     where: { city_country: { city: "Dubai", country: "United Arab Emirates" } },
     update: {},
-    create: { city: "Dubai", country: "United Arab Emirates" },
+    create: { city: "Dubai", country: "United Arab Emirates", code: "DXB" },
   });
   const amsterdam = await prisma.destination.upsert({
     where: { city_country: { city: "Amsterdam", country: "Netherlands" } },
     update: {},
-    create: { city: "Amsterdam", country: "Netherlands" },
+    create: { city: "Amsterdam", country: "Netherlands", code: "AMS" },
   });
 
   async function upsertRoute(originId: string, destinationId: string) {
     return prisma.route.upsert({
-      where: { originId_destinationId: { originId, destinationId } },
+      where: {
+        originId_destinationId_transportType: { originId, destinationId, transportType: "AIR" },
+      },
       update: {},
       create: { originId, destinationId },
     });

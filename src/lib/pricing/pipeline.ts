@@ -3,7 +3,7 @@ import {
   applyMargin,
   convertCurrency,
   costPricePerStemForIncoterm,
-  freightPerStem as calcFreightPerStem,
+  freightPerStemForUnit,
   handlingPerStem as calcHandlingPerStem,
 } from "./calculations";
 import { isBlocked, validatePriceLineInput } from "./validation";
@@ -31,7 +31,12 @@ export function calculatePriceLine(input: PriceLineInput): PriceLineBreakdown {
   const freight =
     input.incoterm === "FOB"
       ? toMoney(0)
-      : calcFreightPerStem(input.weightPerBoxKg!, input.freightRatePerKg!, input.stemsPerBox);
+      : freightPerStemForUnit({
+          rate: input.freightRatePerKg!,
+          unit: input.freightRateUnit ?? "PER_KG",
+          stemsPerBox: input.stemsPerBox,
+          weightPerBoxKg: input.weightPerBoxKg ?? undefined,
+        });
 
   const handling =
     input.incoterm === "DDP"
