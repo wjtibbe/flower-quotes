@@ -187,9 +187,10 @@ model Destination {
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
-  routes    Route[]
-  customers Customer[]
-  quotes    Quote[]
+  routes               Route[]
+  customers            Customer[]
+  customerDestinations CustomerDestination[]
+  quotes               Quote[]
 
   @@unique([city, country])
 }
@@ -333,8 +334,15 @@ model Customer {
   id                   String   @id @default(uuid())
   companyName          String
   contactName          String?
-  whatsappNumber       String?
+  whatsappNumber       String? // phone number; not WhatsApp-specific, label is "Telefoonnummer" in the UI
   email                String?
+  invoiceAddress       String? // factuuradres
+  country              String? // land (customer's own country, independent of delivery destination)
+  // Denormalized pointer to the customer's current default delivery
+  // destination - kept in sync with the CustomerDestination row where
+  // isDefault=true. A customer may link multiple destinations (see
+  // CustomerDestination); this column exists so all pre-existing code that
+  // reads customer.destinationId keeps working unchanged.
   destinationId        String?
   defaultCurrency      Currency @default(USD)
   defaultIncoterm      Incoterm @default(FOB)
@@ -344,9 +352,32 @@ model Customer {
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  destination Destination? @relation(fields: [destinationId], references: [id])
-  quotes      Quote[]
+  destination           Destination?           @relation(fields: [destinationId], references: [id])
+  customerDestinations  CustomerDestination[]
+  quotes                Quote[]
 
+  @@index([destinationId])
+}
+
+// Links a Customer to one of the reusable Destination locations from Routes
+// & vracht (no second location system). A customer may have several active
+// links; at most one is marked isDefault, kept mirrored onto
+// Customer.destinationId. Deactivating instead of deleting preserves history
+// for quotes that were created while the link was active.
+model CustomerDestination {
+  id            String   @id @default(uuid())
+  customerId    String
+  destinationId String
+  isDefault     Boolean  @default(false)
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  customer    Customer    @relation(fields: [customerId], references: [id])
+  destination Destination @relation(fields: [destinationId], references: [id])
+
+  @@unique([customerId, destinationId])
+  @@index([customerId])
   @@index([destinationId])
 }
 

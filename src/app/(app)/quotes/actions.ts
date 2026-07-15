@@ -42,6 +42,10 @@ export async function createQuotes(formData: FormData): Promise<void> {
     const incoterm = String(formData.get(`incoterm_${customerId}`) ?? customer.defaultIncoterm) as Incoterm;
     const currency = String(formData.get(`currency_${customerId}`) ?? customer.defaultCurrency) as CurrencyCode;
     const marginPercent = String(formData.get(`margin_${customerId}`) ?? customer.defaultMarginPercent.toString());
+    // The user may override the customer's default delivery destination for
+    // this specific quote; the chosen destination drives the route/rates
+    // below and is what gets saved on the quote (never on the customer).
+    const destinationId = (formData.get(`destination_${customerId}`) as string) || customer.destinationId;
 
     const priced: {
       line: (typeof lines)[number];
@@ -50,7 +54,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
     }[] = [];
 
     for (const line of lines) {
-      const result = await priceLineForCustomer(line, customer, incoterm, currency, marginPercent);
+      const result = await priceLineForCustomer(line, customer, incoterm, currency, marginPercent, destinationId);
       if (result.breakdown) {
         priced.push({ line, breakdown: result.breakdown, context: result.context });
       } else {
@@ -76,7 +80,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
         quoteNumber,
         customerId: customer.id,
         originId: firstOrigin,
-        destinationId: customer.destinationId,
+        destinationId,
         incoterm: incoterm as never,
         currency: currency as never,
         exchangeRateBase: exchangeRateUsed ? (exchangeRateUsed.sourceCurrency as never) : null,

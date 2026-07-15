@@ -14,12 +14,13 @@ export default async function NewQuotePage({
     Array.isArray(searchParams.lineIds) ? searchParams.lineIds : searchParams.lineIds ? [searchParams.lineIds] : []
   ).filter(Boolean);
 
-  const [lines, customers] = await Promise.all([
+  const [lines, customers, destinations] = await Promise.all([
     prisma.farmOfferLine.findMany({
       where: { id: { in: lineIds } },
       include: { productVariant: { include: { product: true } }, farmOffer: { include: { farm: true } } },
     }),
     prisma.customer.findMany({ where: { active: true }, include: { destination: true }, orderBy: { companyName: "asc" } }),
+    prisma.destination.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
   ]);
 
   return (
@@ -27,8 +28,9 @@ export default async function NewQuotePage({
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Nieuwe offerte</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Kies één of meerdere klanten. Per klant wordt een aparte offerte gemaakt met de route, valuta, incoterm en
-          marge zoals hieronder ingesteld (standaard overgenomen van het klantprofiel, hier aan te passen).
+          Kies één of meerdere klanten. Per klant wordt een aparte offerte gemaakt met de bestemming, route, valuta,
+          incoterm en marge zoals hieronder ingesteld (standaard overgenomen van het klantprofiel, hier per offerte
+          aan te passen - de gekozen bestemming bepaalt welke route en tarieven worden gebruikt).
         </p>
       </div>
 
@@ -90,7 +92,20 @@ export default async function NewQuotePage({
                   <input type="checkbox" name="customerIds" value={c.id} />
                 </td>
                 <td className="font-medium">{c.companyName}</td>
-                <td>{c.destination?.city ?? "-"}</td>
+                <td>
+                  <select name={`destination_${c.id}`} className="input py-1" defaultValue={c.destinationId ?? ""}>
+                    {!c.destinationId && (
+                      <option value="" disabled>
+                        Geen standaardbestemming - kies er een
+                      </option>
+                    )}
+                    {destinations.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.city}
+                      </option>
+                    ))}
+                  </select>
+                </td>
                 <td>
                   <select name={`incoterm_${c.id}`} className="input py-1" defaultValue={c.defaultIncoterm}>
                     <option value="FOB">FOB</option>

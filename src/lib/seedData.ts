@@ -288,35 +288,54 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
   // ---------------------------------------------------------------------
   // Customers
   // ---------------------------------------------------------------------
-  await prisma.customer.createMany({
+  // Created individually (not createMany) so each customer's id is available
+  // to seed its CustomerDestination link(s) - a customer may have several
+  // destinations, one marked default and mirrored onto Customer.destinationId.
+  const amsterdamBloom = await prisma.customer.create({
+    data: {
+      companyName: "Amsterdam Bloom BV",
+      contactName: "Sales desk",
+      email: "sales@example-amsterdambloom.test",
+      country: "Netherlands",
+      destinationId: amsterdam.id,
+      defaultCurrency: Currency.EUR,
+      defaultIncoterm: Incoterm.DDP,
+      defaultMarginPercent: "18.000",
+    },
+  });
+  const gulfFresh = await prisma.customer.create({
+    data: {
+      companyName: "Gulf Fresh Flowers LLC",
+      contactName: "Procurement",
+      email: "procurement@example-gulffresh.test",
+      country: "United Arab Emirates",
+      destinationId: dubai.id,
+      defaultCurrency: Currency.USD,
+      defaultIncoterm: Incoterm.FOB,
+      defaultMarginPercent: "12.000",
+    },
+  });
+  const dohaGarden = await prisma.customer.create({
+    data: {
+      companyName: "Doha Garden Trading",
+      contactName: "Buying office",
+      email: "buying@example-dohagarden.test",
+      country: "Qatar",
+      destinationId: doha.id,
+      defaultCurrency: Currency.USD,
+      defaultIncoterm: Incoterm.CFR,
+      defaultMarginPercent: "15.000",
+    },
+  });
+
+  await prisma.customerDestination.createMany({
     data: [
-      {
-        companyName: "Amsterdam Bloom BV",
-        contactName: "Sales desk",
-        email: "sales@example-amsterdambloom.test",
-        destinationId: amsterdam.id,
-        defaultCurrency: Currency.EUR,
-        defaultIncoterm: Incoterm.DDP,
-        defaultMarginPercent: "18.000",
-      },
-      {
-        companyName: "Gulf Fresh Flowers LLC",
-        contactName: "Procurement",
-        email: "procurement@example-gulffresh.test",
-        destinationId: dubai.id,
-        defaultCurrency: Currency.USD,
-        defaultIncoterm: Incoterm.FOB,
-        defaultMarginPercent: "12.000",
-      },
-      {
-        companyName: "Doha Garden Trading",
-        contactName: "Buying office",
-        email: "buying@example-dohagarden.test",
-        destinationId: doha.id,
-        defaultCurrency: Currency.USD,
-        defaultIncoterm: Incoterm.CFR,
-        defaultMarginPercent: "15.000",
-      },
+      { customerId: amsterdamBloom.id, destinationId: amsterdam.id, isDefault: true, active: true },
+      // Demonstrates the multi-destination case: Gulf Fresh's default is
+      // Dubai, but it also ships to Doha under the same account.
+      { customerId: gulfFresh.id, destinationId: dubai.id, isDefault: true, active: true },
+      { customerId: gulfFresh.id, destinationId: doha.id, isDefault: false, active: true },
+      { customerId: dohaGarden.id, destinationId: doha.id, isDefault: true, active: true },
     ],
   });
 

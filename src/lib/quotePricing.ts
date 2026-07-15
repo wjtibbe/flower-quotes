@@ -33,11 +33,17 @@ export interface ResolvedPricingContext {
  * required. Returns whatever it could find - missing pieces simply come back
  * null and surface as validation blockers, never as thrown errors, so the
  * review UI can show exactly what's missing.
+ *
+ * `destinationIdOverride` lets a specific quote use a different destination
+ * than the customer's stored default (spec: the user may change the
+ * destination for this particular quote); it falls back to
+ * `customer.destinationId` when omitted.
  */
 export async function resolvePricingContext(
   line: FarmOfferLine,
   customer: Customer,
   incoterm: Incoterm,
+  destinationIdOverride?: string | null,
 ): Promise<ResolvedPricingContext> {
   // Compatibility fallback: parsed lines usually have no explicit originId -
   // fall back to the supplier's configured origin, so uploaded offers can be
@@ -50,7 +56,7 @@ export async function resolvePricingContext(
     });
     originId = offer?.farm?.originId ?? null;
   }
-  const destinationId = customer.destinationId;
+  const destinationId = destinationIdOverride !== undefined ? destinationIdOverride : customer.destinationId;
 
   let routeId: string | null = null;
   let routeSupportsIncoterm = true;
@@ -180,8 +186,9 @@ export async function priceLineForCustomer(
   incoterm: Incoterm,
   targetCurrency: CurrencyCode,
   marginPercent: string,
+  destinationIdOverride?: string | null,
 ): Promise<LinePricingResult> {
-  const context = await resolvePricingContext(line, customer, incoterm);
+  const context = await resolvePricingContext(line, customer, incoterm, destinationIdOverride);
 
   if (!context.routeSupportsIncoterm) {
     return {
