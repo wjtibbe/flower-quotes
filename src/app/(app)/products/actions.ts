@@ -49,6 +49,92 @@ export async function createCentralProduct(formData: FormData): Promise<void> {
   redirect("/products?msg=created");
 }
 
+/**
+ * Bulk-creates supplier-assortment rows from a pasted list, one row per
+ * line: "Omschrijving<TAB or ,>Stelen per doos" optionally followed by
+ * doostype, doosgewicht, leverancierscode en notities to override the shared
+ * defaults set above the textarea. The central product is shared across all
+ * lines (reused if it already exists, by name); each line's description
+ * becomes the variant's "variety" text as-is (no attempt to split it into
+ * color/grade/length - the source price lists this is meant for already
+ * combine those into one descriptive name).
+ *
+ * Safe to re-run on the same paste: an existing variant is reused rather
+ * than duplicated, and a line whose (leverancier, variant, doostype,
+ * stelen/doos) combination already exists is skipped instead of duplicated.
+ */
+export async function bulkAddAssortment(formData: FormData): Promise<void> {
+  const farmId = norm(formData.get("farmId"));
+  const productName = norm(formData.get("productName"));
+  const productGroup = norm(formData.get("productGroup")) ?? productName;
+  const defaultBoxType = norm(formData.get("boxType")) ?? "QB";
+  const defaultWeightPerBoxKg = norm(formData.get("weightPerBoxKg"));
+  const rowsRaw = String(formData.get("rows") ?? "");
+
+  if (!farmId || !productName) throw new Error("Leverancier en product zijn verplicht");
+
+  let product = await prisma.product.findFirst({
+    where: { name: { equals: productName, mode: "insensitive" } },
+  });
+  if (!product) {
+    product = await prisma.product.create({ data: { name: productName, productGroup: productGroup! } });
+  }
+
+  let created = 0;
+  let duplicates = 0;
+  let invalid = 0;
+
+  const lines = rowsRaw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  for (const line of lines) {
+    const cols = (line.includes("\t") ? line.split("\t") : line.split(",")).map((c) => c.trim());
+    const variety = cols[0] || null;
+    const stemsPerBox = parseInt(cols[1] ?? "", 10);
+    const boxType = cols[2] || defaultBoxType;
+    const weightPerBoxKg = cols[3] || defaultWeightPerBoxKg;
+    const supplierCode = cols[4] || null;
+    const notes = cols[5] || null;
+
+    if (!variety || !Number.isFinite(stemsPerBox) || stemsPerBox <= 0 || !weightPerBoxKg) {
+      invalid++;
+      continue;
+    }
+
+    let variant = await prisma.productVariant.findFirst({
+      where: {
+        productId: product.id,
+        variety: { equals: variety, mode: "insensitive" },
+        stemLength: null,
+        color: null,
+        grade: null,
+        treatment: null,
+      },
+    });
+    if (!variant) {
+      variant = await prisma.productVariant.create({ data: { productId: product.id, variety } });
+    }
+
+    const existingLink = await prisma.packagingWeightProfile.findFirst({
+      where: { farmId, productVariantId: variant.id, boxType, stemsPerBox },
+    });
+    if (existingLink) {
+      duplicates++;
+      continue;
+    }
+
+    await prisma.packagingWeightProfile.create({
+      data: { farmId, productVariantId: variant.id, boxType, stemsPerBox, weightPerBoxKg, supplierCode, notes },
+    });
+    created++;
+  }
+
+  revalidatePath("/products");
+  redirect(`/products?msg=bulk&created=${created}&dup=${duplicates}&invalid=${invalid}`);
+}
+
 /** Links a supplier to an existing central product (creates a supplier-assortment row). */
 export async function addSupplierLink(formData: FormData): Promise<void> {
   const farmId = norm(formData.get("farmId"));

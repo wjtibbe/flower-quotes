@@ -3,6 +3,7 @@ import { fmtMoney } from "@/lib/format";
 import { variantLabel } from "@/lib/variantLabel";
 import {
   createCentralProduct,
+  bulkAddAssortment,
   addSupplierLink,
   updateSupplierLink,
   duplicateSupplierLink,
@@ -24,6 +25,9 @@ interface Filters {
   status?: string;
   q?: string;
   msg?: string;
+  created?: string;
+  dup?: string;
+  invalid?: string;
 }
 
 export default async function AssortmentPage({ searchParams }: { searchParams: Filters }) {
@@ -99,6 +103,13 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
       {searchParams.msg === "exists" && (
         <div className="card p-3 bg-amber-50 border-amber-200 text-sm text-amber-800">
           Dit centrale product bestaat al - er is geen duplicaat aangemaakt.
+        </div>
+      )}
+      {searchParams.msg === "bulk" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">
+          {searchParams.created ?? 0} regel(s) toegevoegd
+          {Number(searchParams.dup) > 0 && `, ${searchParams.dup} al aanwezig (overgeslagen)`}
+          {Number(searchParams.invalid) > 0 && `, ${searchParams.invalid} regel(s) ongeldig (overgeslagen)`}.
         </div>
       )}
 
@@ -295,6 +306,72 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
             )}
           </tbody>
         </table>
+      </div>
+
+      <div className="card p-6">
+        <h2 className="font-semibold text-gray-800 mb-1">Meerdere regels tegelijk toevoegen (plakken)</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Handig bij een prijslijst van een leverancier met veel variëteiten (bv. een hydrangea-assortiment). Kies
+          hieronder eenmalig het centrale product en de leverancier, en plak daarna één regel per variëteit:{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">Omschrijving</code> gevolgd door{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">stelen per doos</code> (gescheiden door een Tab of komma
+          - zoals bij plakken vanuit Excel). Optioneel kun je per regel ook nog doostype, doosgewicht en
+          leverancierscode toevoegen om de standaardwaarden hieronder te overschrijven. Opnieuw plakken van dezelfde
+          lijst maakt geen duplicaten aan.
+        </p>
+        <form action={bulkAddAssortment} className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <label className="label">Centraal product *</label>
+              <input className="input" name="productName" required list="bulkProductNames" placeholder="bv. Hydrangea" />
+              <datalist id="bulkProductNames">
+                {products.map((p) => (
+                  <option key={p.id} value={p.name} />
+                ))}
+              </datalist>
+            </div>
+            <div>
+              <label className="label">Productgroep (optioneel)</label>
+              <input className="input" name="productGroup" placeholder="standaard gelijk aan product" />
+            </div>
+            <div>
+              <label className="label">Leverancier *</label>
+              <select className="input" name="farmId" required defaultValue="">
+                <option value="" disabled>
+                  Kies leverancier...
+                </option>
+                {farms.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="label">Doostype (standaard)</label>
+                <input className="input" name="boxType" defaultValue="QB" />
+              </div>
+              <div>
+                <label className="label">Doosgewicht kg (standaard) *</label>
+                <input className="input" type="number" step="0.001" name="weightPerBoxKg" required />
+              </div>
+            </div>
+          </div>
+          <div>
+            <label className="label">Regels (één per variëteit)</label>
+            <textarea
+              className="input font-mono text-xs"
+              name="rows"
+              rows={8}
+              required
+              placeholder={"White Select 15/16cm\t40\nWhite Premium 18/20cm\t30\nWhite Jumbo 22+\t20"}
+            />
+          </div>
+          <button className="btn-primary" type="submit">
+            Regels toevoegen
+          </button>
+        </form>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
