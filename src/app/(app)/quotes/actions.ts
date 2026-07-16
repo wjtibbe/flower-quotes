@@ -12,8 +12,6 @@ import { QuoteStatus, QuoteExportType } from "@prisma/client";
 import { buildWhatsAppText, buildEmailText } from "@/lib/exports/text";
 import { buildCustomerExcel, buildInternalExcel } from "@/lib/exports/excel";
 import { quoteForExportInclude } from "@/lib/exports/types";
-import fs from "node:fs/promises";
-import path from "node:path";
 
 async function requireUserId(): Promise<string> {
   const session = await getServerSession(authOptions);
@@ -196,8 +194,6 @@ export async function setQuoteStatus(quoteId: string, status: QuoteStatus): Prom
   revalidatePath(`/quotes/${quoteId}`);
 }
 
-const EXPORT_DIR = path.join(process.cwd(), "storage", "exports");
-
 export async function generateExport(quoteId: string, type: QuoteExportType): Promise<void> {
   const quote = await prisma.quote.findUniqueOrThrow({
     where: { id: quoteId },
@@ -208,13 +204,13 @@ export async function generateExport(quoteId: string, type: QuoteExportType): Pr
     const content = type === QuoteExportType.WHATSAPP ? buildWhatsAppText(quote) : buildEmailText(quote);
     await prisma.quoteExport.create({ data: { quoteId, type, content } });
   } else {
-    await fs.mkdir(EXPORT_DIR, { recursive: true });
     const buffer =
       type === QuoteExportType.EXCEL_CUSTOMER ? await buildCustomerExcel(quote) : await buildInternalExcel(quote);
     const fileName = `${quote.quoteNumber}-${type === QuoteExportType.EXCEL_CUSTOMER ? "klant" : "intern"}.xlsx`;
-    const filePath = path.join("storage", "exports", `${quote.id}-${fileName}`);
-    await fs.writeFile(path.join(process.cwd(), filePath), buffer);
-    await prisma.quoteExport.create({ data: { quoteId, type, filePath } });
+    // Excel bytes are stored in the database (fileData), not on local disk -
+    // serverless hosting (Vercel) has no writable/durable filesystem outside
+    // a request's own /tmp. filePath is kept only to derive the file name.
+    await prisma.quoteExport.create({ data: { quoteId, type, filePath: fileName, fileData: buffer } });
   }
 
   if (quote.status === QuoteStatus.READY) {

@@ -424,7 +424,12 @@ model SourceUpload {
   id           String         @id @default(uuid())
   fileType     SourceFileType
   originalName String
+  // Legacy: used to be a local-disk path. Serverless hosting (Vercel) has no
+  // writable/durable filesystem outside a request's own /tmp, so the file is
+  // no longer written to disk - storagePath is kept as a label for existing
+  // rows and audit trails; the actual bytes now live in fileData.
   storagePath  String
+  fileData     Bytes? // the uploaded file's raw bytes
   rawText      String? // extracted raw text, kept for audit/reprocessing
   uploadedById String
   createdAt    DateTime       @default(now())
@@ -630,7 +635,11 @@ model QuoteExport {
   quoteId   String
   type      QuoteExportType
   content   String? // rendered text for WHATSAPP/EMAIL exports
-  filePath  String? // stored file path for EXCEL exports
+  // Legacy: used to be a local-disk path. Excel bytes now live in fileData
+  // (see SourceUpload for why) - filePath is kept only to derive the
+  // download filename.
+  filePath  String? // stored file name for EXCEL exports
+  fileData  Bytes? // the generated Excel file's raw bytes
   createdAt DateTime        @default(now())
 
   quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)

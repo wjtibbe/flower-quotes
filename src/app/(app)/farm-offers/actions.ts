@@ -4,14 +4,12 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getServerSession } from "next-auth";
 import path from "node:path";
-import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { detectFileType, runImport } from "@/lib/import";
 import { ConfidenceLevel, Currency, FarmOfferStatus, SourceFileType } from "@prisma/client";
 
-const UPLOAD_DIR = path.join(process.cwd(), "storage", "uploads");
 const CONFIDENCE_MAP: Record<string, ConfidenceLevel> = {
   high: ConfidenceLevel.HIGH,
   medium: ConfidenceLevel.MEDIUM,
@@ -35,10 +33,11 @@ export async function uploadFarmOffer(formData: FormData): Promise<void> {
   const fileType = detectFileType(file.name, file.type);
   const buffer = Buffer.from(await file.arrayBuffer());
 
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  // File bytes are stored in the database (fileData), not on local disk -
+  // serverless hosting (Vercel) has no writable/durable filesystem outside a
+  // request's own /tmp. storagePath is kept as a descriptive label only.
   const storedName = `${randomUUID()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
   const storagePath = path.join("storage", "uploads", storedName);
-  await fs.writeFile(path.join(process.cwd(), storagePath), buffer);
 
   const result = await runImport(fileType, buffer);
 
@@ -47,6 +46,7 @@ export async function uploadFarmOffer(formData: FormData): Promise<void> {
       fileType: fileType as SourceFileType,
       originalName: file.name,
       storagePath,
+      fileData: buffer,
       rawText: result.rawText || null,
       uploadedById: userId,
     },
