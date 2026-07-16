@@ -222,6 +222,90 @@ export async function addManualOfferLine(offerId: string, formData: FormData): P
   revalidatePath(`/farm-offers/${offerId}/review`);
 }
 
+/**
+ * Bulk-adds offer lines from a pasted list - one row per line:
+ * "Omschrijving<TAB>Stelen per doos<TAB>FOB-prijs per steel" optionally
+ * followed by dozen beschikbaar, doostype, doosgewicht en valuta to override
+ * the shared defaults. Used when OCR isn't configured for an image/PDF
+ * upload (section: "Maak een fallback voor handmatige invoer wanneer parsing
+ * mislukt") and pasting is much faster than one-line-at-a-time entry.
+ *
+ * Each line is auto-linked to an existing central Assortiment variant when
+ * its description matches exactly one ProductVariant.variety - the same text
+ * used when setting up this supplier's assortment - so a price list that
+ * mirrors an already-entered assortment (e.g. via the bulk-import on
+ * Assortiment) links up automatically instead of needing manual matching per
+ * line. The matching weight profile (leverancier + variant + doostype +
+ * stelen/doos) is used to fill the doosgewicht when not overridden.
+ */
+export async function bulkAddOfferLines(offerId: string, formData: FormData): Promise<void> {
+  const offer = await prisma.farmOffer.findUniqueOrThrow({ where: { id: offerId } });
+  const defaultBoxType = (formData.get("boxType") as string) || "QB";
+  const defaultCurrency = ((formData.get("currency") as string) || "USD") as Currency;
+  const rowsRaw = String(formData.get("rows") ?? "");
+
+  const lines = rowsRaw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  let added = 0;
+  let invalid = 0;
+
+  for (const line of lines) {
+    const cols = (line.includes("\t") ? line.split("\t") : line.split(",")).map((c) => c.trim());
+    const description = cols[0] || null;
+    const stemsPerBox = parseInt(cols[1] ?? "", 10);
+    const fobPricePerStem = cols[2] || null;
+    const boxesAvailable = cols[3] ? parseInt(cols[3], 10) : null;
+    const boxType = cols[4] || defaultBoxType;
+    let weightPerBoxKg = cols[5] || null;
+    const currency = (cols[6] as Currency) || defaultCurrency;
+
+    if (!description || !Number.isFinite(stemsPerBox) || stemsPerBox <= 0 || !fobPricePerStem) {
+      invalid++;
+      continue;
+    }
+
+    let productVariantId: string | null = null;
+    const matches = await prisma.productVariant.findMany({
+      where: { active: true, variety: { equals: description, mode: "insensitive" } },
+    });
+    if (matches.length === 1) {
+      productVariantId = matches[0].id;
+      if (!weightPerBoxKg && offer.farmId) {
+        const profile = await prisma.packagingWeightProfile.findFirst({
+          where: { active: true, farmId: offer.farmId, productVariantId, boxType, stemsPerBox },
+          orderBy: { effectiveFrom: "desc" },
+        });
+        if (profile) weightPerBoxKg = profile.weightPerBoxKg.toString();
+      }
+    }
+
+    await prisma.farmOfferLine.create({
+      data: {
+        farmOfferId: offerId,
+        rawText: description,
+        varietyRaw: description,
+        treatmentRaw: "normal",
+        boxType,
+        boxesAvailable,
+        stemsPerBox,
+        fobPricePerStem,
+        currency,
+        weightPerBoxKg,
+        productVariantId,
+        confidence: ConfidenceLevel.HIGH, // pasted by a human from a real price list - trusted by definition
+        needsReview: false,
+      },
+    });
+    added++;
+  }
+
+  revalidatePath(`/farm-offers/${offerId}/review`);
+  redirect(`/farm-offers/${offerId}/review?msg=bulk&added=${added}&invalid=${invalid}`);
+}
+
 export async function markOfferReviewed(offerId: string): Promise<void> {
   await prisma.farmOffer.update({ where: { id: offerId }, data: { status: FarmOfferStatus.REVIEWED } });
   redirect(`/farm-offers/${offerId}`);

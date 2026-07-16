@@ -2,7 +2,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { suggestProductVariant } from "@/lib/import/aliasMatching";
 import { variantLabel } from "@/lib/variantLabel";
-import { updateOfferLine, deleteOfferLine, addManualOfferLine, markOfferReviewed } from "../../actions";
+import { updateOfferLine, deleteOfferLine, addManualOfferLine, bulkAddOfferLines, markOfferReviewed } from "../../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +18,7 @@ export default async function ReviewFarmOfferPage({
   searchParams,
 }: {
   params: { id: string };
-  searchParams: { fatal?: string };
+  searchParams: { fatal?: string; msg?: string; added?: string; invalid?: string };
 }) {
   const offer = await prisma.farmOffer.findUnique({
     where: { id: params.id },
@@ -52,10 +52,18 @@ export default async function ReviewFarmOfferPage({
         </p>
         {searchParams.fatal && (
           <p className="text-sm text-red-600 mt-2">
-            Automatisch uitlezen is mislukt: {searchParams.fatal}. Voeg de regels hieronder handmatig toe.
+            Automatisch uitlezen is mislukt: {searchParams.fatal}. Voeg de regels hieronder handmatig toe, of plak
+            een lijst met het formulier onderaan deze pagina.
           </p>
         )}
       </div>
+
+      {searchParams.msg === "bulk" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">
+          {searchParams.added ?? 0} regel(s) toegevoegd
+          {Number(searchParams.invalid) > 0 && `, ${searchParams.invalid} regel(s) ongeldig (overgeslagen)`}.
+        </div>
+      )}
 
       <div className="space-y-4">
         {offer.lines.map((line, idx) => {
@@ -165,6 +173,46 @@ export default async function ReviewFarmOfferPage({
             Geen regels herkend uit dit bestand. Voeg hieronder handmatig regels toe.
           </div>
         )}
+      </div>
+
+      <div className="card p-6">
+        <h2 className="font-semibold text-gray-800 mb-1">Meerdere regels tegelijk toevoegen (plakken)</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Handig als automatisch uitlezen niet lukt (bv. een screenshot zonder OCR) of gewoon sneller dan één voor
+          één. Plak per regel: <code className="text-xs bg-gray-100 px-1 rounded">Omschrijving</code> +{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">stelen per doos</code> +{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">FOB-prijs per steel</code> (gescheiden door een Tab of
+          komma). Een omschrijving die exact overeenkomt met een bestaande Assortiment-variëteit van deze leverancier
+          wordt automatisch gekoppeld (inclusief het doosgewicht, indien bekend).
+        </p>
+        <form action={bulkAddOfferLines.bind(null, offer.id)} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4 max-w-md">
+            <div>
+              <label className="label">Doostype (standaard)</label>
+              <input className="input" name="boxType" defaultValue="QB" />
+            </div>
+            <div>
+              <label className="label">Valuta (standaard)</label>
+              <select className="input" name="currency" defaultValue="USD">
+                <option value="USD">USD</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="label">Regels (één per variëteit)</label>
+            <textarea
+              className="input font-mono text-xs"
+              name="rows"
+              rows={8}
+              required
+              placeholder={"White Select 15/16cm\t40\t0.47\nWhite Premium 18/20cm\t30\t0.60\nWhite Jumbo 22+\t20\t1.02"}
+            />
+          </div>
+          <button className="btn-primary" type="submit">
+            Regels toevoegen
+          </button>
+        </form>
       </div>
 
       <div className="card p-6">
