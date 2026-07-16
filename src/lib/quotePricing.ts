@@ -24,6 +24,8 @@ export interface ResolvedPricingContext {
   freightRateUpdatedAt: Date | null;
   additionalCosts: AdditionalCostInput[]; // route additional costs, valid now
   exchangeRate: ExchangeRateSnapshot | null;
+  exchangeRateIsManual: boolean; // true when a per-quote override rate was used
+  exchangeRateDefault: string | null; // the standard rate that would have applied (for transparency)
 }
 
 /**
@@ -38,12 +40,18 @@ export interface ResolvedPricingContext {
  * than the customer's stored default (spec: the user may change the
  * destination for this particular quote); it falls back to
  * `customer.destinationId` when omitted.
+ *
+ * `exchangeRateOverride` lets a specific quote override the standard exchange
+ * rate (spec D): when provided and a conversion is actually needed, it is used
+ * as "1 line.currency = override customer.defaultCurrency"; the standard rate
+ * is still resolved and returned as `exchangeRateDefault` for transparency.
  */
 export async function resolvePricingContext(
   line: FarmOfferLine,
   customer: Customer,
   incoterm: Incoterm,
   destinationIdOverride?: string | null,
+  exchangeRateOverride?: string | null,
 ): Promise<ResolvedPricingContext> {
   // Compatibility fallback: parsed lines usually have no explicit originId -
   // fall back to the supplier's configured origin, so uploaded offers can be
@@ -106,10 +114,26 @@ export async function resolvePricingContext(
   }
 
   let exchangeRate: ExchangeRateSnapshot | null = null;
+  let exchangeRateIsManual = false;
+  let exchangeRateDefault: string | null = null;
   if (line.currency !== customer.defaultCurrency) {
-    const rate = await findExchangeRate(line.currency, customer.defaultCurrency);
-    if (rate) {
-      exchangeRate = { baseCurrency: rate.baseCurrency, quoteCurrency: rate.quoteCurrency, rate: rate.rate.toString() };
+    // Always resolve the standard rate too, so we can show/store what the
+    // default would have been even when the user overrides it.
+    const standard = await findExchangeRate(line.currency, customer.defaultCurrency);
+    if (standard) {
+      exchangeRateDefault = normalizedRateForPair(standard, line.currency, customer.defaultCurrency);
+    }
+
+    const override = exchangeRateOverride?.trim();
+    if (override && Number(override) > 0) {
+      exchangeRate = { baseCurrency: line.currency, quoteCurrency: customer.defaultCurrency, rate: override };
+      exchangeRateIsManual = true;
+    } else if (standard) {
+      exchangeRate = {
+        baseCurrency: standard.baseCurrency,
+        quoteCurrency: standard.quoteCurrency,
+        rate: standard.rate.toString(),
+      };
     }
   }
 
@@ -123,6 +147,8 @@ export async function resolvePricingContext(
     freightRateUpdatedAt,
     additionalCosts,
     exchangeRate,
+    exchangeRateIsManual,
+    exchangeRateDefault,
   };
 }
 
@@ -161,17 +187,44 @@ async function resolveAdditionalCosts(routeId: string): Promise<AdditionalCostIn
   return [...chosen.values()];
 }
 
+/**
+ * The exchange rate to use right now for the {from,to} pair, in either stored
+ * direction. Same "currently valid" rule as freight/additional costs: active,
+ * already effective, not yet expired, newest effectiveFrom wins - so a
+ * future-dated rate isn't used early and a closed one drops out, while the
+ * simple "one open-ended active rate per pair" setup keeps working unchanged.
+ */
 async function findExchangeRate(from: CurrencyCode, to: CurrencyCode) {
+  const now = new Date();
   return prisma.exchangeRate.findFirst({
     where: {
       active: true,
+      effectiveFrom: { lte: now },
       OR: [
-        { baseCurrency: from, quoteCurrency: to },
-        { baseCurrency: to, quoteCurrency: from },
+        { effectiveTo: null, baseCurrency: from, quoteCurrency: to },
+        { effectiveTo: null, baseCurrency: to, quoteCurrency: from },
+        { effectiveTo: { gte: now }, baseCurrency: from, quoteCurrency: to },
+        { effectiveTo: { gte: now }, baseCurrency: to, quoteCurrency: from },
       ],
     },
     orderBy: { effectiveFrom: "desc" },
   });
+}
+
+/**
+ * Expresses a stored rate as "1 from = X to", inverting when the row is stored
+ * in the opposite direction, so the default rate we surface for a pair is
+ * always comparable to a user-entered override for the same pair.
+ */
+function normalizedRateForPair(
+  rate: { baseCurrency: CurrencyCode; quoteCurrency: CurrencyCode; rate: { toString(): string } },
+  from: CurrencyCode,
+  to: CurrencyCode,
+): string {
+  const value = Number(rate.rate.toString());
+  if (rate.baseCurrency === from && rate.quoteCurrency === to) return value.toString();
+  if (rate.baseCurrency === to && rate.quoteCurrency === from && value !== 0) return (1 / value).toString();
+  return value.toString();
 }
 
 export interface LinePricingResult {
@@ -187,8 +240,9 @@ export async function priceLineForCustomer(
   targetCurrency: CurrencyCode,
   marginPercent: string,
   destinationIdOverride?: string | null,
+  exchangeRateOverride?: string | null,
 ): Promise<LinePricingResult> {
-  const context = await resolvePricingContext(line, customer, incoterm, destinationIdOverride);
+  const context = await resolvePricingContext(line, customer, incoterm, destinationIdOverride, exchangeRateOverride);
 
   if (!context.routeSupportsIncoterm) {
     return {

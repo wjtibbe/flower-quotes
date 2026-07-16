@@ -112,7 +112,10 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
     "Handling/steel",
     "Overige kosten/steel",
     "Kostprijs/steel (bron)",
+    "Bronvaluta",
+    "Doelvaluta",
     "Wisselkoers",
+    "Koers handmatig",
     "Kostprijs/steel (offertevaluta)",
     "Marge %",
     "Berekende verkoopprijs",
@@ -123,10 +126,24 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
   styleHeaderRow(sheet.getRow(1));
   sheet.columns = columns.map((c) => ({ width: Math.max(16, c.length + 2) }));
 
+  // Manual-override note (quote-level), shown per converting line so the
+  // internal sheet stays self-explanatory.
+  const manualNote = quote.exchangeRateIsManual
+    ? quote.exchangeRateDefaultValue
+      ? `ja (standaard ${Number(quote.exchangeRateDefaultValue.toString())})`
+      : "ja"
+    : "";
+
   let r = 2;
   for (const line of quote.lines) {
     const variant = line.farmOfferLine.productVariant;
     const finalPrice = line.manualSellPricePerStem ?? line.calculatedSellPricePerStem;
+    // Prefer the per-line snapshot (source of truth); fall back to the
+    // quote-level snapshot for legacy lines created before per-line fields.
+    const rateValue = line.exchangeRateValue ?? quote.exchangeRateValue;
+    const rateBase = line.exchangeRateBase ?? quote.exchangeRateBase;
+    const rateQuote = line.exchangeRateQuote ?? quote.exchangeRateQuote;
+    const hasConversion = rateValue != null;
     sheet.getRow(r).values = [
       variant
         ? [variant.product.name, variant.variety, variant.color, variant.grade, variant.stemLength]
@@ -146,7 +163,10 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
           decOrZero(line.handlingPerStem),
       ),
       Number(line.costPricePerStemSource.toString()),
-      quote.exchangeRateValue ? Number(quote.exchangeRateValue.toString()) : "",
+      hasConversion ? rateBase ?? "" : line.sourceCurrency,
+      hasConversion ? rateQuote ?? "" : quote.currency,
+      hasConversion ? Number(rateValue!.toString()) : "",
+      hasConversion ? manualNote : "",
       Number(line.costPricePerStemQuote.toString()),
       Number(line.marginPercent.toString()),
       Number(line.calculatedSellPricePerStem.toString()),

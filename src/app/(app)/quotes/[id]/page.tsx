@@ -48,10 +48,23 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
         </div>
       </div>
 
-      {quote.exchangeRateValue && (
-        <div className="text-xs text-gray-500">
-          Wisselkoers snapshot: 1 {quote.exchangeRateBase} = {fmtMoney(quote.exchangeRateValue, 6)} {quote.exchangeRateQuote}{" "}
-          ({fmtDateTime(quote.exchangeRateDate)})
+      {quote.exchangeRateValue ? (
+        <div className="text-xs text-gray-500 space-y-0.5">
+          <div>
+            Wisselkoers snapshot: 1 {quote.exchangeRateBase} = {fmtMoney(quote.exchangeRateValue, 6)}{" "}
+            {quote.exchangeRateQuote} ({fmtDateTime(quote.exchangeRateDate)})
+            {quote.exchangeRateIsManual && <span className="ml-2 badge-medium">handmatig aangepast</span>}
+          </div>
+          {quote.exchangeRateIsManual && quote.exchangeRateDefaultValue && (
+            <div className="text-amber-600">
+              Afwijkend van de standaardkoers ({fmtMoney(quote.exchangeRateDefaultValue, 6)} {quote.exchangeRateQuote})
+              {quote.exchangeRateOverrideReason ? ` - reden: ${quote.exchangeRateOverrideReason}` : ""}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="text-xs text-gray-400">
+          Geen wisselkoers nodig (bron- en doelvaluta gelijk) of niet vastgelegd voor deze offerte.
         </div>
       )}
 

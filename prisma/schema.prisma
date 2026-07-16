@@ -43,8 +43,9 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  farmOffersCreated FarmOffer[] @relation("FarmOfferCreatedBy")
-  quotesCreated     Quote[]     @relation("QuoteCreatedBy")
+  farmOffersCreated    FarmOffer[]    @relation("FarmOfferCreatedBy")
+  quotesCreated        Quote[]        @relation("QuoteCreatedBy")
+  exchangeRatesUpdated ExchangeRate[] @relation("ExchangeRateUpdatedBy")
 }
 
 // ---------------------------------------------------------------------------
@@ -386,14 +387,22 @@ model CustomerDestination {
 // ---------------------------------------------------------------------------
 
 model ExchangeRate {
-  id            String   @id @default(uuid())
+  id            String    @id @default(uuid())
   baseCurrency  Currency
   quoteCurrency Currency
-  rate          Decimal  @db.Decimal(12, 6) // 1 base = `rate` quote, e.g. 1 USD = 0.92 EUR
-  effectiveFrom DateTime @default(now())
+  rate          Decimal   @db.Decimal(12, 6) // 1 base = `rate` quote, e.g. 1 USD = 0.92 EUR
+  effectiveFrom DateTime  @default(now())
+  // Optional validity end. Null = open-ended (the common case for a single
+  // manually maintained "current" rate). When present, the rate stops being
+  // selected after this moment - kept for history, never deleted.
+  effectiveTo   DateTime?
   notes         String?
-  active        Boolean  @default(true)
-  createdAt     DateTime @default(now())
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt // "laatst gewijzigd"
+  updatedById   String? // "gewijzigd door" (the user who last set/edited this rate)
+
+  updatedBy User? @relation("ExchangeRateUpdatedBy", fields: [updatedById], references: [id])
 
   @@index([baseCurrency, quoteCurrency, active])
 }
@@ -523,6 +532,12 @@ model Quote {
   exchangeRateQuote    Currency?
   exchangeRateValue    Decimal?    @db.Decimal(12, 6)
   exchangeRateDate     DateTime?
+  // Manual override transparency: when the user overrode the rate for this
+  // quote, exchangeRateIsManual is true and exchangeRateDefaultValue keeps the
+  // standard rate that would otherwise have applied at calculation time.
+  exchangeRateIsManual     Boolean  @default(false)
+  exchangeRateDefaultValue Decimal? @db.Decimal(12, 6)
+  exchangeRateOverrideReason String?
   marginPercentDefault Decimal     @db.Decimal(6, 3)
   status               QuoteStatus @default(CONCEPT)
   validUntil           DateTime?
@@ -569,6 +584,14 @@ model QuoteLine {
   additionalCostsSnapshot      Json?
   costPricePerStemSource       Decimal          @db.Decimal(12, 6) // in source currency
   costPricePerStemQuote        Decimal          @db.Decimal(12, 6) // converted to quote currency
+  // Per-line exchange-rate snapshot - the source of truth for historical
+  // calculations, since one quote may contain lines with different source
+  // currencies. Null when no conversion was needed (source == target) or for
+  // legacy lines created before this field existed (treated as unknown, never
+  // recomputed with the current rate).
+  exchangeRateBase             Currency?
+  exchangeRateQuote            Currency?
+  exchangeRateValue            Decimal?         @db.Decimal(12, 6)
   marginPercent                Decimal          @db.Decimal(6, 3)
   calculatedSellPricePerStem   Decimal          @db.Decimal(12, 6)
 

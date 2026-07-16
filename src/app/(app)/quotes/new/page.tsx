@@ -14,14 +14,32 @@ export default async function NewQuotePage({
     Array.isArray(searchParams.lineIds) ? searchParams.lineIds : searchParams.lineIds ? [searchParams.lineIds] : []
   ).filter(Boolean);
 
-  const [lines, customers, destinations] = await Promise.all([
+  const [lines, customers, destinations, activeRates] = await Promise.all([
     prisma.farmOfferLine.findMany({
       where: { id: { in: lineIds } },
       include: { productVariant: { include: { product: true } }, farmOffer: { include: { farm: true } } },
     }),
     prisma.customer.findMany({ where: { active: true }, include: { destination: true }, orderBy: { companyName: "asc" } }),
     prisma.destination.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
+    prisma.exchangeRate.findMany({ where: { active: true }, orderBy: { effectiveFrom: "desc" } }),
   ]);
+
+  // The source currencies present in the selected lines, used to decide per
+  // customer whether a conversion (and thus an exchange rate) applies.
+  const lineCurrencies = [...new Set(lines.map((l) => l.currency))];
+
+  /** "1 from = X to" using an active rate in either stored direction, or null. */
+  function currentRateFor(from: string, to: string): string | null {
+    if (from === to) return null;
+    const match = activeRates.find(
+      (r) =>
+        (r.baseCurrency === from && r.quoteCurrency === to) || (r.baseCurrency === to && r.quoteCurrency === from),
+    );
+    if (!match) return null;
+    const v = Number(match.rate.toString());
+    if (match.baseCurrency === from) return v.toString();
+    return v !== 0 ? (1 / v).toFixed(6) : v.toString();
+  }
 
   return (
     <div className="space-y-6">
@@ -83,10 +101,16 @@ export default async function NewQuotePage({
               <th>Incoterm</th>
               <th>Valuta</th>
               <th>Marge (%)</th>
+              <th>Wisselkoers</th>
             </tr>
           </thead>
           <tbody>
-            {customers.map((c) => (
+            {customers.map((c) => {
+              // Source currency(ies) among the selected lines that differ from
+              // this customer's target currency; if any, a rate applies.
+              const foreignSource = lineCurrencies.find((cur) => cur !== c.defaultCurrency);
+              const currentRate = foreignSource ? currentRateFor(foreignSource, c.defaultCurrency) : null;
+              return (
               <tr key={c.id}>
                 <td>
                   <input type="checkbox" name="customerIds" value={c.id} />
@@ -128,8 +152,37 @@ export default async function NewQuotePage({
                     defaultValue={c.defaultMarginPercent.toString()}
                   />
                 </td>
+                <td>
+                  {!foreignSource ? (
+                    <span className="text-xs text-gray-400">n.v.t.</span>
+                  ) : (
+                    <details>
+                      <summary className="text-xs text-brand-600 cursor-pointer">
+                        {currentRate ? `1 ${foreignSource} = ${currentRate} ${c.defaultCurrency}` : "geen koers"}
+                      </summary>
+                      <div className="mt-1 bg-gray-50 p-2 rounded space-y-1 min-w-56">
+                        <label className="label">Koers overschrijven (1 {foreignSource} = ? {c.defaultCurrency})</label>
+                        <input
+                          name={`exchangeRate_${c.id}`}
+                          type="number"
+                          step="0.000001"
+                          min="0"
+                          placeholder={currentRate ?? "bv. 0.92"}
+                          className="input py-1 text-xs w-full"
+                        />
+                        <label className="label">Reden (optioneel)</label>
+                        <input name={`exchangeRateReason_${c.id}`} className="input py-1 text-xs w-full" />
+                        <p className="text-[11px] text-gray-400">
+                          Leeg laten = huidige standaardkoers gebruiken. Een overschrijving geldt alleen voor deze
+                          offerte.
+                        </p>
+                      </div>
+                    </details>
+                  )}
+                </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
 

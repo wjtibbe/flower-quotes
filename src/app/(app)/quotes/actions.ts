@@ -46,6 +46,11 @@ export async function createQuotes(formData: FormData): Promise<void> {
     // this specific quote; the chosen destination drives the route/rates
     // below and is what gets saved on the quote (never on the customer).
     const destinationId = (formData.get(`destination_${customerId}`) as string) || customer.destinationId;
+    // Optional manual exchange-rate override for this specific quote. Empty =
+    // use the current standard rate. The override never touches the global
+    // exchange-rate records.
+    const exchangeRateOverride = (formData.get(`exchangeRate_${customerId}`) as string)?.trim() || null;
+    const exchangeRateOverrideReason = (formData.get(`exchangeRateReason_${customerId}`) as string)?.trim() || null;
 
     const priced: {
       line: (typeof lines)[number];
@@ -54,7 +59,15 @@ export async function createQuotes(formData: FormData): Promise<void> {
     }[] = [];
 
     for (const line of lines) {
-      const result = await priceLineForCustomer(line, customer, incoterm, currency, marginPercent, destinationId);
+      const result = await priceLineForCustomer(
+        line,
+        customer,
+        incoterm,
+        currency,
+        marginPercent,
+        destinationId,
+        exchangeRateOverride,
+      );
       if (result.breakdown) {
         priced.push({ line, breakdown: result.breakdown, context: result.context });
       } else {
@@ -73,7 +86,13 @@ export async function createQuotes(formData: FormData): Promise<void> {
 
     const quoteNumber = await generateQuoteNumber();
     const firstOrigin = priced.find((p) => p.context.originId)?.context.originId ?? null;
-    const exchangeRateUsed = priced.find((p) => p.breakdown.exchangeRateUsed)?.breakdown;
+    // Quote-level exchange snapshot: taken from the first converting line.
+    // (Per-line snapshots below are the source of truth when a single quote
+    // mixes source currencies.)
+    const converting = priced.find((p) => p.breakdown.exchangeRateUsed);
+    const exchangeRateUsed = converting?.breakdown;
+    const exchangeRateIsManual = converting?.context.exchangeRateIsManual ?? false;
+    const exchangeRateDefaultValue = converting?.context.exchangeRateDefault ?? null;
 
     const quote = await prisma.quote.create({
       data: {
@@ -87,6 +106,9 @@ export async function createQuotes(formData: FormData): Promise<void> {
         exchangeRateQuote: exchangeRateUsed ? (exchangeRateUsed.targetCurrency as never) : null,
         exchangeRateValue: exchangeRateUsed ? exchangeRateUsed.exchangeRateUsed!.toString() : null,
         exchangeRateDate: exchangeRateUsed ? new Date() : null,
+        exchangeRateIsManual,
+        exchangeRateDefaultValue: exchangeRateIsManual ? exchangeRateDefaultValue : null,
+        exchangeRateOverrideReason: exchangeRateIsManual ? exchangeRateOverrideReason : null,
         marginPercentDefault: marginPercent,
         status: QuoteStatus.CONCEPT,
         createdById: userId,
@@ -111,6 +133,11 @@ export async function createQuotes(formData: FormData): Promise<void> {
             additionalCostsSnapshot: breakdown.additionalCosts as never,
             costPricePerStemSource: breakdown.totalCostPricePerStemSource.toString(),
             costPricePerStemQuote: breakdown.costPricePerStemTarget.toString(),
+            // Per-line exchange-rate snapshot (source of truth). Null when the
+            // line needed no conversion.
+            exchangeRateBase: breakdown.exchangeRateUsed ? (breakdown.sourceCurrency as never) : null,
+            exchangeRateQuote: breakdown.exchangeRateUsed ? (breakdown.targetCurrency as never) : null,
+            exchangeRateValue: breakdown.exchangeRateUsed ? breakdown.exchangeRateUsed.toString() : null,
             marginPercent: breakdown.marginPercent.toString(),
             calculatedSellPricePerStem: breakdown.calculatedSellPricePerStemRounded.toString(),
             quantityBoxes: line.boxesAvailable ?? 1,
