@@ -150,7 +150,8 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
             .filter(Boolean)
             .join(" - ")
         : line.farmOfferLine.productGroupRaw ?? "",
-      line.farmOfferLine.farmOffer.farm?.name ?? "",
+      // Supplier snapshot on the line itself; farm-offer path for legacy lines.
+      line.farm?.name ?? line.farmOfferLine.farmOffer.farm?.name ?? "",
       quote.incoterm,
       Number(line.fobPricePerStem.toString()),
       decOrZero(line.freightPerStem),

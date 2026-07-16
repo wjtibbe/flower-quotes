@@ -23,8 +23,10 @@ async function requireUserId(): Promise<string> {
 
 export async function createQuotes(formData: FormData): Promise<void> {
   const userId = await requireUserId();
-  const lineIds = formData.getAll("lineIds").map(String);
-  const customerIds = formData.getAll("customerIds").map(String);
+  // Dedupe defensively: the same line submitted twice (e.g. via URL + wizard
+  // checkbox) must never produce a duplicate quote line.
+  const lineIds = [...new Set(formData.getAll("lineIds").map(String))];
+  const customerIds = [...new Set(formData.getAll("customerIds").map(String))];
 
   if (lineIds.length === 0) throw new Error("Geen productregels geselecteerd");
   if (customerIds.length === 0) throw new Error("Geen klanten geselecteerd");
@@ -115,6 +117,8 @@ export async function createQuotes(formData: FormData): Promise<void> {
         lines: {
           create: priced.map(({ line, breakdown, context }) => ({
             farmOfferLineId: line.id,
+            // Supplier snapshot per line - one quote can mix leveranciers.
+            farmId: line.farmOffer.farmId,
             fobPricePerStem: breakdown.fobPricePerStem.toString(),
             sourceCurrency: line.currency,
             weightPerBoxKg: line.weightPerBoxKg,

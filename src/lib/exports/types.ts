@@ -6,6 +6,9 @@ export const quoteForExportInclude = {
   destination: true,
   lines: {
     include: {
+      // Supplier snapshot on the line itself (multi-supplier quotes); the
+      // farmOffer.farm path stays as fallback for legacy lines.
+      farm: true,
       farmOfferLine: {
         include: {
           productVariant: { include: { product: true } },

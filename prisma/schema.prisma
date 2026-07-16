@@ -66,6 +66,7 @@ model Farm {
   aliases        FarmAlias[]
   offers         FarmOffer[]
   weightProfiles PackagingWeightProfile[]
+  quoteLines     QuoteLine[]
 
   @@index([originId])
 }
@@ -560,6 +561,10 @@ model QuoteLine {
   id              String @id @default(uuid())
   quoteId         String
   farmOfferLineId String
+  // Supplier snapshot: each line carries its own supplier, so one quote can
+  // combine products from multiple leveranciers. Nullable for legacy lines
+  // (backfilled via farmOfferLine -> farmOffer -> farm where possible).
+  farmId          String?
 
   // Snapshot of the inputs used for this calculation (so history is reproducible
   // even if the underlying farm offer, weight profile or rate changes later)
@@ -607,8 +612,10 @@ model QuoteLine {
 
   quote         Quote         @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   farmOfferLine FarmOfferLine @relation(fields: [farmOfferLineId], references: [id])
+  farm          Farm?         @relation(fields: [farmId], references: [id])
 
   @@index([quoteId])
+  @@index([farmId])
 }
 
 enum QuoteExportType {

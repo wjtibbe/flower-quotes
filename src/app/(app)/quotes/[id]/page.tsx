@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import { quoteForExportInclude } from "@/lib/exports/types";
+import { quoteTotals } from "@/lib/quoteTotals";
 import { variantLabel } from "@/lib/variantLabel";
 import CopyButton from "@/components/CopyButton";
 import { overrideQuoteLinePrice, clearQuoteLineOverride, setQuoteStatus, generateExport } from "../actions";
@@ -72,7 +73,11 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
         <table className="table-base">
           <thead>
             <tr>
+              <th>Leverancier</th>
               <th>Product</th>
+              <th>Verpakking</th>
+              <th>Dozen</th>
+              <th>Stelen</th>
               <th>FOB</th>
               <th>Vracht</th>
               <th>Clearing & Inspection</th>
@@ -105,9 +110,17 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
                 ? (line.additionalCostsSnapshot as { name: string; unit: string; perStem: string }[])
                 : [];
 
+              // Supplier: the line's own snapshot, with the farm-offer path as
+              // fallback for legacy lines created before farmId existed.
+              const supplierName = line.farm?.name ?? line.farmOfferLine.farmOffer.farm?.name ?? "-";
+
               return (
                 <tr key={line.id}>
+                  <td className="font-medium whitespace-nowrap">{supplierName}</td>
                   <td>{label}</td>
+                  <td>{line.farmOfferLine.boxType ?? "-"}</td>
+                  <td>{line.quantityBoxes}</td>
+                  <td>{line.quantityBoxes * line.stemsPerBox}</td>
                   <td>{fmtMoney(line.fobPricePerStem, 4)}</td>
                   <td>{fmtMoney(line.freightPerStem, 4)}</td>
                   <td>{fmtMoney(line.clearingAndInspectionPerStem, 4)}</td>
@@ -170,6 +183,37 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
           </tbody>
         </table>
       </div>
+
+      {(() => {
+        // Quote totals: simply the sum of all lines - every line carries its
+        // own supplier, route, costs and exchange-rate snapshot.
+        const totals = quoteTotals(quote.lines);
+        const supplierNames = [
+          ...new Set(
+            quote.lines.map((l) => l.farm?.name ?? l.farmOfferLine.farmOffer.farm?.name).filter(Boolean),
+          ),
+        ] as string[];
+        return (
+          <div className="card p-4 flex flex-wrap gap-6 text-sm text-gray-700">
+            <div>
+              <span className="text-gray-400">Leveranciers:</span>{" "}
+              <span className="font-medium">{supplierNames.length > 0 ? supplierNames.join(", ") : "-"}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Totaal dozen:</span> <span className="font-medium">{totals.totalBoxes}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Totaal stelen:</span> <span className="font-medium">{totals.totalStems}</span>
+            </div>
+            <div>
+              <span className="text-gray-400">Totale offertewaarde:</span>{" "}
+              <span className="font-medium">
+                {quote.currency} {fmtMoney(totals.totalValue.toString(), 2)}
+              </span>
+            </div>
+          </div>
+        );
+      })()}
 
       <div className="card p-4 flex flex-wrap gap-2 items-center">
         <span className="text-sm text-gray-600 mr-2">Status:</span>

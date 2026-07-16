@@ -14,9 +14,12 @@ export default async function NewQuotePage({
     Array.isArray(searchParams.lineIds) ? searchParams.lineIds : searchParams.lineIds ? [searchParams.lineIds] : []
   ).filter(Boolean);
 
-  const [lines, customers, destinations, activeRates] = await Promise.all([
+  // All priced lines are candidates, so one offerte can combine regels from
+  // multiple leveranciers. The lineIds from the URL arrive pre-checked; the
+  // user can add or remove lines (across suppliers) before calculating.
+  const [candidateLines, customers, destinations, activeRates] = await Promise.all([
     prisma.farmOfferLine.findMany({
-      where: { id: { in: lineIds } },
+      where: { OR: [{ fobPricePerStem: { not: null } }, { id: { in: lineIds } }] },
       include: { productVariant: { include: { product: true } }, farmOffer: { include: { farm: true } } },
     }),
     prisma.customer.findMany({ where: { active: true }, include: { destination: true }, orderBy: { companyName: "asc" } }),
@@ -24,7 +27,17 @@ export default async function NewQuotePage({
     prisma.exchangeRate.findMany({ where: { active: true }, orderBy: { effectiveFrom: "desc" } }),
   ]);
 
-  // The source currencies present in the selected lines, used to decide per
+  const selectedSet = new Set(lineIds);
+  const lines = [...candidateLines].sort((a, b) => {
+    const bySelected = Number(selectedSet.has(b.id)) - Number(selectedSet.has(a.id));
+    if (bySelected !== 0) return bySelected;
+    const byFarm = (a.farmOffer.farm?.name ?? "").localeCompare(b.farmOffer.farm?.name ?? "");
+    if (byFarm !== 0) return byFarm;
+    return a.createdAt.getTime() - b.createdAt.getTime();
+  });
+  const supplierCount = new Set(lines.filter((l) => selectedSet.has(l.id)).map((l) => l.farmOffer.farmId)).size;
+
+  // The source currencies present in the candidate lines, used to decide per
   // customer whether a conversion (and thus an exchange rate) applies.
   const lineCurrencies = [...new Set(lines.map((l) => l.currency))];
 
@@ -52,17 +65,22 @@ export default async function NewQuotePage({
         </p>
       </div>
 
-      {lines.length === 0 ? (
-        <div className="card p-6 text-amber-700 bg-amber-50">
-          Geen productregels geselecteerd. Ga naar een farm-aanbieding en selecteer eerst regels.
-        </div>
-      ) : (
+      <form action={createQuotes} className="space-y-6">
         <div className="card overflow-x-auto">
+          <div className="px-4 pt-4">
+            <h2 className="font-semibold text-gray-800">Productregels</h2>
+            <p className="text-xs text-gray-500 mt-0.5 mb-2">
+              Regels van meerdere leveranciers kunnen in één offerte worden gecombineerd - vink aan of uit welke
+              regels meedoen. Iedere regel rekent met zijn eigen leverancier, route, kosten en wisselkoers.
+              {supplierCount > 1 && ` Nu ${supplierCount} leveranciers geselecteerd.`}
+            </p>
+          </div>
           <table className="table-base">
             <thead>
               <tr>
-                <th>Product</th>
+                <th></th>
                 <th>Leverancier</th>
+                <th>Product</th>
                 <th>Box</th>
                 <th>FOB</th>
               </tr>
@@ -71,27 +89,37 @@ export default async function NewQuotePage({
               {lines.map((line) => (
                 <tr key={line.id}>
                   <td>
+                    <input
+                      type="checkbox"
+                      name="lineIds"
+                      value={line.id}
+                      defaultChecked={selectedSet.has(line.id)}
+                    />
+                  </td>
+                  <td className="font-medium">{line.farmOffer.farm?.name ?? "-"}</td>
+                  <td>
                     {line.productVariant
                       ? variantLabel(line.productVariant, line.productVariant.product.name)
                       : line.productGroupRaw ?? line.rawText.slice(0, 40)}
                   </td>
-                  <td>{line.farmOffer.farm?.name ?? "-"}</td>
                   <td>
                     {line.boxType} · {line.stemsPerBox ?? "?"} stelen
                   </td>
                   <td>{line.fobPricePerStem ? `${line.currency} ${fmtMoney(line.fobPricePerStem, 4)}` : "ontbreekt"}</td>
                 </tr>
               ))}
+              {lines.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="text-center text-gray-400 py-6">
+                    Geen berekenbare productregels beschikbaar. Upload eerst een leveranciersaanbieding.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-      )}
 
-      <form action={createQuotes} className="card p-6 space-y-4">
-        {lineIds.map((id) => (
-          <input key={id} type="hidden" name="lineIds" value={id} />
-        ))}
-
+        <div className="card p-6 space-y-4">
         <table className="table-base">
           <thead>
             <tr>
@@ -189,6 +217,7 @@ export default async function NewQuotePage({
         <button type="submit" className="btn-primary" disabled={lines.length === 0}>
           Bereken en genereer offerte(s)
         </button>
+        </div>
       </form>
     </div>
   );
