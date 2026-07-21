@@ -11,6 +11,8 @@ import {
   type BulkEditInput,
 } from "@/lib/bulkSelection";
 import { blockedDeleteMessage } from "@/lib/deletionMessage";
+import { MAX_BULK } from "@/lib/bulkIds";
+import type { ActionResult } from "@/lib/actionResult";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -18,14 +20,7 @@ function norm(v: FormDataEntryValue | null): string | null {
 }
 
 /** Result of a bulk action, surfaced by the client as a success/error toast. */
-export interface BulkActionResult {
-  ok: boolean;
-  message: string;
-}
-
-// Guard against an accidental "select everything" hitting the database with a
-// single unbounded write; also a natural double-submit / abuse ceiling.
-const MAX_BULK = 1000;
+export type BulkActionResult = ActionResult;
 
 /**
  * Validates a list of selected supplier-link ids: non-empty, within the cap,

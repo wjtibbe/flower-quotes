@@ -9,6 +9,9 @@ import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { detectFileType, runImport } from "@/lib/import";
 import { ConfidenceLevel, Currency, FarmOfferStatus, SourceFileType } from "@prisma/client";
+import { blockedDeleteMessage } from "@/lib/deletionMessage";
+import { normalizeBulkIds } from "@/lib/bulkIds";
+import type { ActionResult } from "@/lib/actionResult";
 
 const CONFIDENCE_MAP: Record<string, ConfidenceLevel> = {
   high: ConfidenceLevel.HIGH,
@@ -302,6 +305,101 @@ export async function bulkAddOfferLines(offerId: string, formData: FormData): Pr
 
   revalidatePath(`/farm-offers/${offerId}/review`);
   redirect(`/farm-offers/${offerId}/review?msg=bulk&added=${added}&invalid=${invalid}`);
+}
+
+/**
+ * Hard-deletes a single leveranciersaanbieding. The offer's own lines cascade
+ * on delete, but a line that is already used in a quote
+ * (QuoteLine.farmOfferLineId is a required, Restrict-ed FK) must never be
+ * removed - that would corrupt historical quotes - so the delete is blocked
+ * with a clear message when any line is referenced. The upload's raw file bytes
+ * (SourceUpload) are cleaned up in the same transaction when no other offer
+ * still references them, so no orphan records are left behind.
+ */
+export async function deleteFarmOffer(id: string): Promise<ActionResult> {
+  await requireUserId();
+  const offer = await prisma.farmOffer.findUnique({
+    where: { id },
+    select: { title: true, sourceUploadId: true },
+  });
+  if (!offer) return { ok: false, message: "Deze leveranciersaanbieding bestaat niet meer. Ververs de pagina." };
+
+  const usedInQuotes = await prisma.quoteLine.count({ where: { farmOfferLine: { farmOfferId: id } } });
+  const blocked = blockedDeleteMessage("Deze leveranciersaanbieding", [
+    { count: usedInQuotes, label: "offerteregel(s)" },
+  ]);
+  if (blocked) return { ok: false, message: blocked };
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.farmOffer.delete({ where: { id } });
+      if (offer.sourceUploadId) {
+        const others = await tx.farmOffer.count({ where: { sourceUploadId: offer.sourceUploadId } });
+        if (others === 0) await tx.sourceUpload.delete({ where: { id: offer.sourceUploadId } });
+      }
+    });
+  } catch {
+    return { ok: false, message: "Verwijderen is mislukt door een databasefout. Probeer het opnieuw." };
+  }
+
+  revalidatePath("/farm-offers");
+  return { ok: true, message: `Aanbieding "${offer.title ?? "Naamloos"}" verwijderd.` };
+}
+
+/**
+ * Bulk-deletes the selected leveranciersaanbiedingen. Offers whose lines are
+ * still referenced by a quote are skipped (never partially deleted) and
+ * reported; the rest are removed in one transaction, together with any now-
+ * orphaned SourceUpload bytes.
+ */
+export async function bulkDeleteFarmOffers(ids: string[]): Promise<ActionResult> {
+  await requireUserId();
+  const norm = normalizeBulkIds(ids);
+  if ("error" in norm) return { ok: false, message: norm.error };
+
+  // Any offer with at least one quote-referenced line can't be deleted (the
+  // cascade would hit that Restrict-ed line), so exclude the whole offer.
+  const referenced = await prisma.quoteLine.findMany({
+    where: { farmOfferLine: { farmOfferId: { in: norm.ids } } },
+    select: { farmOfferLine: { select: { farmOfferId: true } } },
+  });
+  const blockedIds = new Set(referenced.map((r) => r.farmOfferLine.farmOfferId));
+  const deletableIds = norm.ids.filter((id) => !blockedIds.has(id));
+
+  if (deletableIds.length === 0) {
+    return {
+      ok: false,
+      message: "Geen van de geselecteerde leveranciersaanbiedingen kon worden verwijderd: ze zijn nog gekoppeld aan offertes.",
+    };
+  }
+
+  let deletedCount = 0;
+  try {
+    const uploads = await prisma.farmOffer.findMany({
+      where: { id: { in: deletableIds }, sourceUploadId: { not: null } },
+      select: { sourceUploadId: true },
+    });
+    const uploadIds = [...new Set(uploads.map((u) => u.sourceUploadId!).filter(Boolean))];
+
+    await prisma.$transaction(async (tx) => {
+      const res = await tx.farmOffer.deleteMany({ where: { id: { in: deletableIds } } });
+      deletedCount = res.count;
+      for (const uploadId of uploadIds) {
+        const others = await tx.farmOffer.count({ where: { sourceUploadId: uploadId } });
+        if (others === 0) await tx.sourceUpload.delete({ where: { id: uploadId } });
+      }
+    });
+  } catch {
+    return { ok: false, message: "Verwijderen is mislukt door een databasefout. Probeer het opnieuw." };
+  }
+
+  revalidatePath("/farm-offers");
+  const skipped = norm.ids.length - deletableIds.length;
+  const message =
+    skipped > 0
+      ? `${deletedCount} leveranciersaanbieding(en) verwijderd. ${skipped} overgeslagen omdat deze nog gekoppeld zijn aan offertes.`
+      : `${deletedCount} leveranciersaanbieding(en) verwijderd.`;
+  return { ok: true, message };
 }
 
 export async function markOfferReviewed(offerId: string): Promise<void> {

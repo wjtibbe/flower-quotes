@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtDate } from "@/lib/format";
+import DeletableTable from "@/components/DeletableTable";
+import { deleteFarmOffer, bulkDeleteFarmOffers } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -65,47 +67,37 @@ export default async function FarmOffersPage({
         <button className="btn-secondary">Filteren</button>
       </form>
 
-      <div className="card overflow-x-auto">
-        <table className="table-base">
-          <thead>
-            <tr>
-              <th>Titel</th>
-              <th>Leverancier</th>
-              <th>Regels</th>
-              <th>Status</th>
-              <th>Aangemaakt</th>
-              <th>Door</th>
-            </tr>
-          </thead>
-          <tbody>
-            {offers.map((o) => (
-              <tr key={o.id}>
-                <td>
-                  <Link href={`/farm-offers/${o.id}`} className="text-brand-700 hover:underline font-medium">
-                    {o.title ?? "Naamloos"}
-                  </Link>
-                </td>
-                <td>{o.farm?.name ?? <span className="text-gray-400">niet gekoppeld</span>}</td>
-                <td>{o._count.lines}</td>
-                <td>
-                  <span className={o.status === "DRAFT" ? "badge-medium" : "badge-high"}>
-                    {STATUS_LABELS[o.status]}
-                  </span>
-                </td>
-                <td>{fmtDate(o.createdAt)}</td>
-                <td>{o.createdBy.name}</td>
-              </tr>
-            ))}
-            {offers.length === 0 && (
-              <tr>
-                <td colSpan={6} className="text-center text-gray-400 py-6">
-                  Geen aanbiedingen gevonden.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DeletableTable
+        columns={[
+          { header: "Titel" },
+          { header: "Leverancier" },
+          { header: "Regels" },
+          { header: "Status" },
+          { header: "Aangemaakt" },
+          { header: "Door" },
+        ]}
+        rows={offers.map((o) => ({
+          id: o.id,
+          cells: [
+            <Link key="t" href={`/farm-offers/${o.id}`} className="text-brand-700 hover:underline font-medium">
+              {o.title ?? "Naamloos"}
+            </Link>,
+            o.farm?.name ?? <span className="text-gray-400">niet gekoppeld</span>,
+            o._count.lines,
+            <span key="s" className={o.status === "DRAFT" ? "badge-medium" : "badge-high"}>
+              {STATUS_LABELS[o.status]}
+            </span>,
+            fmtDate(o.createdAt),
+            o.createdBy.name,
+          ],
+        }))}
+        emptyMessage="Geen aanbiedingen gevonden."
+        nounSingular="leveranciersaanbieding"
+        nounPlural="leveranciersaanbiedingen"
+        confirmSingleText="Weet je zeker dat je deze leveranciersaanbieding wilt verwijderen? Deze actie kan niet ongedaan worden gemaakt."
+        deleteAction={deleteFarmOffer}
+        bulkDeleteAction={bulkDeleteFarmOffers}
+      />
     </div>
   );
 }

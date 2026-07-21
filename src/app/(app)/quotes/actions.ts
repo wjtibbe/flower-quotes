@@ -12,6 +12,8 @@ import { QuoteStatus, QuoteExportType } from "@prisma/client";
 import { buildWhatsAppText, buildEmailText } from "@/lib/exports/text";
 import { buildCustomerExcel, buildInternalExcel } from "@/lib/exports/excel";
 import { quoteForExportInclude } from "@/lib/exports/types";
+import { normalizeBulkIds } from "@/lib/bulkIds";
+import type { ActionResult } from "@/lib/actionResult";
 
 async function requireUserId(): Promise<string> {
   const session = await getServerSession(authOptions);
@@ -192,6 +194,46 @@ export async function clearQuoteLineOverride(quoteLineId: string): Promise<void>
 export async function setQuoteStatus(quoteId: string, status: QuoteStatus): Promise<void> {
   await prisma.quote.update({ where: { id: quoteId }, data: { status } });
   revalidatePath(`/quotes/${quoteId}`);
+}
+
+/**
+ * Hard-deletes a single quote. A quote is always safe to remove: its lines
+ * (QuoteLine) and exports (QuoteExport) both cascade on delete at the database
+ * level, and nothing else references a Quote - so no orphan rows are left
+ * behind. Returns a result object so the list can refresh in place and toast
+ * the outcome (never a raw SQL error).
+ */
+export async function deleteQuote(id: string): Promise<ActionResult> {
+  await requireUserId();
+  const quote = await prisma.quote.findUnique({ where: { id }, select: { quoteNumber: true } });
+  if (!quote) return { ok: false, message: "Deze offerte bestaat niet meer. Ververs de pagina." };
+
+  try {
+    await prisma.quote.delete({ where: { id } });
+  } catch {
+    return { ok: false, message: "Verwijderen is mislukt door een databasefout. Probeer het opnieuw." };
+  }
+  revalidatePath("/quotes");
+  return { ok: true, message: `Offerte ${quote.quoteNumber} verwijderd.` };
+}
+
+/**
+ * Hard-deletes every selected quote in one transaction. Same cascade safety as
+ * the single delete, so this is a plain deleteMany; the count returned is the
+ * number of rows actually removed.
+ */
+export async function bulkDeleteQuotes(ids: string[]): Promise<ActionResult> {
+  await requireUserId();
+  const norm = normalizeBulkIds(ids);
+  if ("error" in norm) return { ok: false, message: norm.error };
+
+  try {
+    const res = await prisma.quote.deleteMany({ where: { id: { in: norm.ids } } });
+    revalidatePath("/quotes");
+    return { ok: true, message: `${res.count} offerte(s) verwijderd.` };
+  } catch {
+    return { ok: false, message: "Verwijderen is mislukt door een databasefout. Probeer het opnieuw." };
+  }
 }
 
 export async function generateExport(quoteId: string, type: QuoteExportType): Promise<void> {

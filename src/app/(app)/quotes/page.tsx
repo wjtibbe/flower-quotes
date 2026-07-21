@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtDate, fmtMoney } from "@/lib/format";
+import DeletableTable from "@/components/DeletableTable";
+import { deleteQuote, bulkDeleteQuotes } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -91,51 +93,43 @@ export default async function QuotesPage({
         <button className="btn-secondary">Filteren</button>
       </form>
 
-      <div className="card overflow-x-auto">
-        <table className="table-base">
-          <thead>
-            <tr>
-              <th>Offertenummer</th>
-              <th>Klant</th>
-              <th>Bestemming</th>
-              <th>Incoterm</th>
-              <th>Valuta</th>
-              <th>Marge</th>
-              <th>Regels</th>
-              <th>Status</th>
-              <th>Datum</th>
-            </tr>
-          </thead>
-          <tbody>
-            {quotes.map((q) => (
-              <tr key={q.id}>
-                <td>
-                  <Link href={`/quotes/${q.id}`} className="text-brand-700 hover:underline font-medium">
-                    {q.quoteNumber}
-                  </Link>
-                </td>
-                <td>{q.customer.companyName}</td>
-                <td>{q.destination?.city ?? "-"}</td>
-                <td>{q.incoterm}</td>
-                <td>{q.currency}</td>
-                <td>{fmtMoney(q.marginPercentDefault, 1)}%</td>
-                <td>{q._count.lines}</td>
-                <td>
-                  <span className={q.status === "CONCEPT" ? "badge-medium" : "badge-high"}>{STATUS_LABEL[q.status]}</span>
-                </td>
-                <td>{fmtDate(q.createdAt)}</td>
-              </tr>
-            ))}
-            {quotes.length === 0 && (
-              <tr>
-                <td colSpan={9} className="text-center text-gray-400 py-6">
-                  Geen offertes gevonden.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <DeletableTable
+        columns={[
+          { header: "Offertenummer" },
+          { header: "Klant" },
+          { header: "Bestemming" },
+          { header: "Incoterm" },
+          { header: "Valuta" },
+          { header: "Marge" },
+          { header: "Regels" },
+          { header: "Status" },
+          { header: "Datum" },
+        ]}
+        rows={quotes.map((q) => ({
+          id: q.id,
+          cells: [
+            <Link key="n" href={`/quotes/${q.id}`} className="text-brand-700 hover:underline font-medium">
+              {q.quoteNumber}
+            </Link>,
+            q.customer.companyName,
+            q.destination?.city ?? "-",
+            q.incoterm,
+            q.currency,
+            `${fmtMoney(q.marginPercentDefault, 1)}%`,
+            q._count.lines,
+            <span key="s" className={q.status === "CONCEPT" ? "badge-medium" : "badge-high"}>
+              {STATUS_LABEL[q.status]}
+            </span>,
+            fmtDate(q.createdAt),
+          ],
+        }))}
+        emptyMessage="Geen offertes gevonden."
+        nounSingular="offerte"
+        nounPlural="offertes"
+        confirmSingleText="Weet je zeker dat je deze offerte wilt verwijderen? Deze actie kan niet ongedaan worden gemaakt."
+        deleteAction={deleteQuote}
+        bulkDeleteAction={bulkDeleteQuotes}
+      />
     </div>
   );
 }
