@@ -22,9 +22,9 @@ export default async function NewQuotePage({
       where: { OR: [{ fobPricePerStem: { not: null } }, { id: { in: lineIds } }] },
       include: { productVariant: { include: { product: true } }, farmOffer: { include: { farm: true } } },
     }),
-    prisma.customer.findMany({ where: { active: true }, include: { destination: true }, orderBy: { companyName: "asc" } }),
-    prisma.destination.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
-    prisma.exchangeRate.findMany({ where: { active: true }, orderBy: { effectiveFrom: "desc" } }),
+    prisma.customer.findMany({ include: { destination: true }, orderBy: { companyName: "asc" } }),
+    prisma.destination.findMany({ orderBy: { city: "asc" } }),
+    prisma.exchangeRate.findMany({ orderBy: { effectiveFrom: "desc" } }),
   ]);
 
   const selectedSet = new Set(lineIds);
@@ -41,7 +41,7 @@ export default async function NewQuotePage({
   // customer whether a conversion (and thus an exchange rate) applies.
   const lineCurrencies = [...new Set(lines.map((l) => l.currency))];
 
-  /** "1 from = X to" using an active rate in either stored direction, or null. */
+  /** "1 from = X to" using a rate in either stored direction, or null. */
   function currentRateFor(from: string, to: string): string | null {
     if (from === to) return null;
     const match = activeRates.find(

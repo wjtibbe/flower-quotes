@@ -89,14 +89,23 @@ export async function addFreightRate(routeId: string, formData: FormData): Promi
   revalidatePath("/routes");
 }
 
-/** Deactivates a rate (kept for history, never selected again). */
-export async function toggleFreightRateActive(id: string, active: boolean): Promise<void> {
-  await prisma.freightRate.update({ where: { id }, data: { active: !active } });
+/** Hard-deletes a freight rate. Safe: quotes snapshot their own rate. */
+export async function deleteFreightRate(id: string): Promise<void> {
+  await prisma.freightRate.delete({ where: { id } });
   revalidatePath("/routes");
 }
 
-export async function toggleRouteActive(routeId: string, current: boolean): Promise<void> {
-  await prisma.route.update({ where: { id: routeId }, data: { active: !current } });
+/**
+ * Hard-deletes a route along with its freight rates and additional costs
+ * (they belong to the route). Safe: quotes snapshot origin/destination and
+ * the rate/cost values, so history is unaffected.
+ */
+export async function deleteRoute(routeId: string): Promise<void> {
+  await prisma.$transaction([
+    prisma.freightRate.deleteMany({ where: { routeId } }),
+    prisma.ddpCostRate.deleteMany({ where: { routeId } }),
+    prisma.route.delete({ where: { id: routeId } }),
+  ]);
   revalidatePath("/routes");
 }
 
@@ -106,11 +115,10 @@ export async function toggleRouteSupportsCfr(routeId: string, current: boolean):
   revalidatePath("/routes");
 }
 
-/** Toggles whether a route offers DDP, so quotes/pricing and the DDP-costs screen know not to offer it otherwise. */
+/** Toggles whether a route offers DDP, so quotes/pricing know not to offer it otherwise. */
 export async function toggleRouteSupportsDdp(routeId: string, current: boolean): Promise<void> {
   await prisma.route.update({ where: { id: routeId }, data: { supportsDdp: !current } });
   revalidatePath("/routes");
-  revalidatePath("/ddp-costs");
 }
 
 // --- Route additional costs (DDP clearing/inspection/handling/import/...) ---
@@ -149,8 +157,8 @@ export async function addRouteCost(routeId: string, formData: FormData): Promise
   revalidatePath("/routes");
 }
 
-/** Deactivates a cost line (kept for history, never selected again). */
-export async function toggleRouteCostActive(id: string, active: boolean): Promise<void> {
-  await prisma.ddpCostRate.update({ where: { id }, data: { active: !active } });
+/** Hard-deletes a cost line. Safe: quotes snapshot their own cost values. */
+export async function deleteRouteCost(id: string): Promise<void> {
+  await prisma.ddpCostRate.delete({ where: { id } });
   revalidatePath("/routes");
 }

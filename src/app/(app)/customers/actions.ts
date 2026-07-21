@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { Currency, Incoterm } from "@prisma/client";
+import { blockedDeleteMessage } from "@/lib/deletionMessage";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -45,7 +46,7 @@ export async function saveCustomer(formData: FormData): Promise<void> {
     await prisma.$transaction(async (tx) => {
       const customer = await tx.customer.create({ data: { ...data, destinationId } });
       await tx.customerDestination.create({
-        data: { customerId: customer.id, destinationId, isDefault: true, active: true },
+        data: { customerId: customer.id, destinationId, isDefault: true },
       });
     });
   }
@@ -53,17 +54,29 @@ export async function saveCustomer(formData: FormData): Promise<void> {
   revalidatePath("/customers");
 }
 
-export async function toggleCustomerActive(id: string, active: boolean): Promise<void> {
-  await prisma.customer.update({ where: { id }, data: { active: !active } });
+/**
+ * Hard-deletes a customer. Blocked (with a clear message) when the customer
+ * still has quotes, so historical quotes stay intact. The customer's own
+ * destination links are deleted along with it.
+ */
+export async function deleteCustomer(id: string): Promise<void> {
+  const quotes = await prisma.quote.count({ where: { customerId: id } });
+  const blocked = blockedDeleteMessage("Deze klant", [{ count: quotes, label: "offerte(s)" }]);
+  if (blocked) redirect(`/customers?err=${encodeURIComponent(blocked)}`);
+
+  await prisma.$transaction([
+    prisma.customerDestination.deleteMany({ where: { customerId: id } }),
+    prisma.customer.delete({ where: { id } }),
+  ]);
   revalidatePath("/customers");
+  redirect("/customers?msg=deleted");
 }
 
 /**
  * Adds a delivery destination link to a customer, reusing the shared
- * Destination locations from Routes & vracht. Reactivates a previously
- * deactivated link instead of creating a duplicate (unique constraint on
- * customerId+destinationId prevents duplicates outright). A customer's
- * first destination automatically becomes the default.
+ * Destination locations from Routes & vracht. A duplicate link is prevented by
+ * the unique constraint on customerId+destinationId. A customer's first
+ * destination automatically becomes the default.
  */
 export async function addCustomerDestination(customerId: string, formData: FormData): Promise<void> {
   const destinationId = norm(formData.get("destinationId"));
@@ -72,23 +85,16 @@ export async function addCustomerDestination(customerId: string, formData: FormD
   const existing = await prisma.customerDestination.findUnique({
     where: { customerId_destinationId: { customerId, destinationId } },
   });
-  if (existing?.active) {
+  if (existing) {
     redirect("/customers?msg=destination-link-exists");
   }
 
-  const hasAnyActive = await prisma.customerDestination.count({ where: { customerId, active: true } });
-  const makeDefault = hasAnyActive === 0;
+  const hasAny = await prisma.customerDestination.count({ where: { customerId } });
+  const makeDefault = hasAny === 0;
 
-  if (existing) {
-    await prisma.customerDestination.update({
-      where: { id: existing.id },
-      data: { active: true, isDefault: existing.isDefault || makeDefault },
-    });
-  } else {
-    await prisma.customerDestination.create({
-      data: { customerId, destinationId, active: true, isDefault: makeDefault },
-    });
-  }
+  await prisma.customerDestination.create({
+    data: { customerId, destinationId, isDefault: makeDefault },
+  });
 
   if (makeDefault) {
     await prisma.customer.update({ where: { id: customerId }, data: { destinationId } });
@@ -101,12 +107,11 @@ export async function addCustomerDestination(customerId: string, formData: FormD
 /**
  * Marks one of the customer's linked destinations as the default and mirrors
  * it onto Customer.destinationId (the field the rest of the app still reads
- * directly). Refuses to promote a deactivated link to default.
+ * directly).
  */
 export async function setDefaultCustomerDestination(customerId: string, customerDestinationId: string): Promise<void> {
   const link = await prisma.customerDestination.findUniqueOrThrow({ where: { id: customerDestinationId } });
   if (link.customerId !== customerId) throw new Error("Bestemming hoort niet bij deze klant");
-  if (!link.active) throw new Error("Een gedeactiveerde bestemming kan niet als standaard worden ingesteld");
 
   await prisma.$transaction([
     prisma.customerDestination.updateMany({ where: { customerId, isDefault: true }, data: { isDefault: false } }),
@@ -118,19 +123,18 @@ export async function setDefaultCustomerDestination(customerId: string, customer
 }
 
 /**
- * Deactivates a customer-destination link (kept for history, never deleted).
- * If it was the default, another active link (if any) becomes the new
- * default; otherwise Customer.destinationId is cleared, so a deactivated
- * destination is never left in place as the default.
+ * Removes a customer-destination link outright. If it was the default,
+ * another remaining link (if any) becomes the new default; otherwise
+ * Customer.destinationId is cleared.
  */
-export async function deactivateCustomerDestination(customerDestinationId: string): Promise<void> {
+export async function deleteCustomerDestination(customerDestinationId: string): Promise<void> {
   const link = await prisma.customerDestination.findUniqueOrThrow({ where: { id: customerDestinationId } });
 
-  await prisma.customerDestination.update({ where: { id: link.id }, data: { active: false, isDefault: false } });
+  await prisma.customerDestination.delete({ where: { id: link.id } });
 
   if (link.isDefault) {
     const next = await prisma.customerDestination.findFirst({
-      where: { customerId: link.customerId, active: true },
+      where: { customerId: link.customerId },
       orderBy: { createdAt: "asc" },
     });
     if (next) {

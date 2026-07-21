@@ -4,7 +4,7 @@ import { uploadFarmOffer } from "../actions";
 export const dynamic = "force-dynamic";
 
 export default async function UploadFarmOfferPage() {
-  const farms = await prisma.farm.findMany({ where: { active: true }, orderBy: { name: "asc" } });
+  const farms = await prisma.farm.findMany({ orderBy: { name: "asc" } });
 
   return (
     <div className="space-y-6 max-w-2xl">

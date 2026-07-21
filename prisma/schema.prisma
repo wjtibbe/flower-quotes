@@ -2,8 +2,10 @@
 //
 // Design notes (see README for full rationale):
 // - UUID primary keys everywhere for safe cross-record referencing and future sync/export.
-// - Soft delete via `active` / `archivedAt` flags on reference data instead of hard deletes,
-//   because historical quotes must remain reproducible even if e.g. a farm or product is retired.
+// - Records are either present or deleted - there is no "inactive" soft-delete
+//   state. Deletes are real (hard) deletes, blocked with a clear message when
+//   the record is still referenced (see the delete* server actions), so
+//   historical quotes - which snapshot their own numbers - can never be broken.
 // - All monetary amounts, rates, weights and percentages use Prisma `Decimal` (backed by
 //   PostgreSQL NUMERIC) - never Float - per the "no floating point for money" requirement.
 // - "createdBy" / "updatedBy" + timestamps on every business entity for lightweight audit,
@@ -39,7 +41,6 @@ model User {
   email        String   @unique
   passwordHash String
   role         UserRole @default(SALES)
-  active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -57,7 +58,6 @@ model Farm {
   name      String
   country   String
   originId  String?
-  active    Boolean  @default(true)
   notes     String?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -90,7 +90,6 @@ model Product {
   id           String   @id @default(uuid())
   productGroup String // e.g. Hydrangea, Alstroemeria, Rose
   name         String // standardized display name
-  active       Boolean  @default(true)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -120,7 +119,6 @@ model ProductVariant {
   color      String?
   grade      String? // quality / grade, e.g. "Select", "Fancy", "Premium"
   treatment  String? // e.g. "normal", "tinted", "painted"
-  active     Boolean  @default(true)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -148,7 +146,6 @@ model PackagingWeightProfile {
   weightPerBoxKg   Decimal   @db.Decimal(10, 3)
   effectiveFrom    DateTime  @default(now())
   effectiveTo      DateTime?
-  active           Boolean   @default(true)
   notes            String?
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
@@ -169,7 +166,6 @@ model Origin {
   country      String
   locationName String? // airport or pickup location, e.g. "Mariscal Sucre Intl."
   code         String? // IATA or internal location code, e.g. "UIO"
-  active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
   farms          Farm[]
@@ -186,7 +182,6 @@ model Destination {
   country      String
   locationName String? // airport or delivery location
   code         String? // IATA or internal location code, e.g. "DXB"
-  active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
   routes               Route[]
@@ -214,7 +209,6 @@ model Route {
   // route-level flag - it never depends on freight/DDP data being present.
   supportsCfr   Boolean       @default(true)
   supportsDdp   Boolean       @default(true)
-  active        Boolean       @default(true)
   createdAt     DateTime      @default(now())
 
   origin       Origin        @relation(fields: [originId], references: [id])
@@ -244,14 +238,13 @@ model FreightRate {
   rateUnit      FreightRateUnit @default(PER_KG)
   effectiveFrom DateTime        @default(now())
   effectiveTo   DateTime?
-  active        Boolean         @default(true)
   notes         String?
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
 
   route Route @relation(fields: [routeId], references: [id])
 
-  @@index([routeId, active])
+  @@index([routeId])
 }
 
 // DDP cost rates per route: one combined clearing+inspection price per stem,
@@ -306,15 +299,14 @@ model DdpCostRate {
   amount        Decimal       @db.Decimal(10, 4)
   effectiveFrom DateTime      @default(now())
   effectiveTo   DateTime?
-  active        Boolean       @default(true)
   notes         String?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
   route Route @relation(fields: [routeId], references: [id])
 
-  @@index([routeId, active])
-  @@index([routeId, costType, active])
+  @@index([routeId])
+  @@index([routeId, costType])
 }
 
 // ---------------------------------------------------------------------------
@@ -349,29 +341,27 @@ model Customer {
   defaultCurrency      Currency @default(USD)
   defaultIncoterm      Incoterm @default(FOB)
   defaultMarginPercent Decimal  @default(15) @db.Decimal(6, 3)
-  active               Boolean  @default(true)
   notes                String?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
-  destination           Destination?           @relation(fields: [destinationId], references: [id])
-  customerDestinations  CustomerDestination[]
-  quotes                Quote[]
+  destination          Destination?          @relation(fields: [destinationId], references: [id])
+  customerDestinations CustomerDestination[]
+  quotes               Quote[]
 
   @@index([destinationId])
 }
 
 // Links a Customer to one of the reusable Destination locations from Routes
-// & vracht (no second location system). A customer may have several active
-// links; at most one is marked isDefault, kept mirrored onto
-// Customer.destinationId. Deactivating instead of deleting preserves history
-// for quotes that were created while the link was active.
+// & vracht (no second location system). A customer may have several links; at
+// most one is marked isDefault, kept mirrored onto Customer.destinationId.
+// Links are deleted outright (they carry no history of their own - the quote
+// keeps its own destination snapshot).
 model CustomerDestination {
   id            String   @id @default(uuid())
   customerId    String
   destinationId String
   isDefault     Boolean  @default(false)
-  active        Boolean  @default(true)
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -398,14 +388,13 @@ model ExchangeRate {
   // selected after this moment - kept for history, never deleted.
   effectiveTo   DateTime?
   notes         String?
-  active        Boolean   @default(true)
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @default(now()) @updatedAt // "laatst gewijzigd"
   updatedById   String? // "gewijzigd door" (the user who last set/edited this rate)
 
   updatedBy User? @relation("ExchangeRateUpdatedBy", fields: [updatedById], references: [id])
 
-  @@index([baseCurrency, quoteCurrency, active])
+  @@index([baseCurrency, quoteCurrency])
 }
 
 // ---------------------------------------------------------------------------
@@ -526,30 +515,30 @@ enum QuoteStatus {
 }
 
 model Quote {
-  id                   String      @id @default(uuid())
-  quoteNumber          String      @unique
-  customerId           String
-  originId             String?
-  destinationId        String?
-  incoterm             Incoterm
-  currency             Currency
+  id                         String      @id @default(uuid())
+  quoteNumber                String      @unique
+  customerId                 String
+  originId                   String?
+  destinationId              String?
+  incoterm                   Incoterm
+  currency                   Currency
   // Exchange rate snapshot: null when currency == source currency (no conversion needed)
-  exchangeRateBase     Currency?
-  exchangeRateQuote    Currency?
-  exchangeRateValue    Decimal?    @db.Decimal(12, 6)
-  exchangeRateDate     DateTime?
+  exchangeRateBase           Currency?
+  exchangeRateQuote          Currency?
+  exchangeRateValue          Decimal?    @db.Decimal(12, 6)
+  exchangeRateDate           DateTime?
   // Manual override transparency: when the user overrode the rate for this
   // quote, exchangeRateIsManual is true and exchangeRateDefaultValue keeps the
   // standard rate that would otherwise have applied at calculation time.
-  exchangeRateIsManual     Boolean  @default(false)
-  exchangeRateDefaultValue Decimal? @db.Decimal(12, 6)
+  exchangeRateIsManual       Boolean     @default(false)
+  exchangeRateDefaultValue   Decimal?    @db.Decimal(12, 6)
   exchangeRateOverrideReason String?
-  marginPercentDefault Decimal     @db.Decimal(6, 3)
-  status               QuoteStatus @default(CONCEPT)
-  validUntil           DateTime?
-  createdById          String
-  createdAt            DateTime    @default(now())
-  updatedAt            DateTime    @updatedAt
+  marginPercentDefault       Decimal     @db.Decimal(6, 3)
+  status                     QuoteStatus @default(CONCEPT)
+  validUntil                 DateTime?
+  createdById                String
+  createdAt                  DateTime    @default(now())
+  updatedAt                  DateTime    @updatedAt
 
   customer    Customer      @relation(fields: [customerId], references: [id])
   origin      Origin?       @relation(fields: [originId], references: [id])
@@ -563,7 +552,7 @@ model Quote {
 }
 
 model QuoteLine {
-  id              String @id @default(uuid())
+  id              String  @id @default(uuid())
   quoteId         String
   farmOfferLineId String
   // Supplier snapshot: each line carries its own supplier, so one quote can

@@ -28,7 +28,6 @@ export async function suggestFarm(rawName: string): Promise<FarmSuggestion[]> {
   if (!rawName?.trim()) return [];
 
   const farms = await prisma.farm.findMany({
-    where: { active: true },
     include: { aliases: true },
   });
 
@@ -61,7 +60,6 @@ export async function suggestProductVariant(params: {
   if (!query.trim()) return [];
 
   const variants = await prisma.productVariant.findMany({
-    where: { active: true },
     include: { product: { include: { aliases: true } } },
   });
 

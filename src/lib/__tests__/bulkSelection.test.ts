@@ -25,8 +25,6 @@ const noEdit: BulkEditInput = {
   supplierCode: "",
   notesEnabled: false,
   notes: "",
-  statusEnabled: false,
-  active: true,
 };
 
 describe("selection state", () => {
@@ -115,24 +113,21 @@ describe("bulk edit payload", () => {
       supplierCode: "  ",
       notesEnabled: true,
       notes: "seizoen 2026",
-      statusEnabled: true,
-      active: false,
     };
     expect(buildProfileUpdate(input)).toEqual({
       stemsPerBox: 30,
       supplierCode: null,
       notes: "seizoen 2026",
-      active: false,
     });
   });
 
   it("hasAnyEdit / summary reflect exactly the enabled fields", () => {
     expect(hasAnyEdit(noEdit)).toBe(false);
-    const input: BulkEditInput = { ...noEdit, lengthEnabled: true, stemLength: "60 cm", statusEnabled: true, active: false };
+    const input: BulkEditInput = { ...noEdit, lengthEnabled: true, stemLength: "60 cm", boxTypeEnabled: true, boxType: "HB" };
     expect(hasAnyEdit(input)).toBe(true);
     expect(editSummary(input)).toEqual([
       { label: "Lengte", value: "60 cm" },
-      { label: "Status", value: "Inactief" },
+      { label: "Box/verpakking", value: "HB" },
     ]);
   });
 

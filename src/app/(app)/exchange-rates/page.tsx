@@ -2,7 +2,7 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import ConfirmButton from "@/components/ConfirmButton";
-import { addExchangeRate, editExchangeRate, toggleExchangeRateActive } from "./actions";
+import { addExchangeRate, editExchangeRate, deleteExchangeRate } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -10,7 +10,6 @@ interface Params {
   q?: string;
   base?: string;
   quote?: string;
-  status?: string;
   edit?: string;
   msg?: string;
 }
@@ -18,6 +17,7 @@ interface Params {
 const MESSAGES: Record<string, { text: string; ok: boolean }> = {
   "rate-added": { text: "Nieuwe wisselkoers ingesteld.", ok: true },
   "rate-updated": { text: "Wisselkoers bijgewerkt.", ok: true },
+  "rate-deleted": { text: "Wisselkoers verwijderd.", ok: true },
 };
 
 export default async function ExchangeRatesPage({ searchParams }: { searchParams: Params }) {
@@ -26,12 +26,9 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
     orderBy: [{ baseCurrency: "asc" }, { quoteCurrency: "asc" }, { effectiveFrom: "desc" }],
   });
 
-  const status = searchParams.status ?? "active";
   const contains = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase().includes(b.toLowerCase());
 
   const rows = rates.filter((r) => {
-    if (status === "active" && !r.active) return false;
-    if (status === "inactive" && r.active) return false;
     if (searchParams.base && r.baseCurrency !== searchParams.base) return false;
     if (searchParams.quote && r.quoteCurrency !== searchParams.quote) return false;
     if (searchParams.q) {
@@ -45,7 +42,7 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
 
   const editing = searchParams.edit ? rates.find((r) => r.id === searchParams.edit) : null;
   const currencyOptions = [...new Set(rates.flatMap((r) => [r.baseCurrency, r.quoteCurrency]))].sort();
-  const hasFilters = !!(searchParams.q || searchParams.base || searchParams.quote || (searchParams.status && searchParams.status !== "active"));
+  const hasFilters = !!(searchParams.q || searchParams.base || searchParams.quote);
   const msg = searchParams.msg ? MESSAGES[searchParams.msg] : null;
 
   return (
@@ -83,14 +80,6 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
             ))}
           </select>
         </div>
-        <div>
-          <label className="label">Status</label>
-          <select name="status" defaultValue={status} className="input py-1 w-32">
-            <option value="active">Actief</option>
-            <option value="inactive">Historisch</option>
-            <option value="all">Alle</option>
-          </select>
-        </div>
         <div className="flex-1 min-w-40">
           <label className="label">Zoeken</label>
           <input name="q" defaultValue={searchParams.q ?? ""} placeholder="Valuta, koers, notitie..." className="input py-1" />
@@ -112,13 +101,12 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
               <th>Actuele koers</th>
               <th>Laatst gewijzigd</th>
               <th>Gewijzigd door</th>
-              <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
-              <tr key={r.id} className={r.active ? "" : "opacity-60"}>
+              <tr key={r.id}>
                 <td className="font-medium">{r.baseCurrency}</td>
                 <td>{r.quoteCurrency}</td>
                 <td>
@@ -126,30 +114,24 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
                 </td>
                 <td>{fmtDateTime(r.updatedAt)}</td>
                 <td>{r.updatedBy?.name ?? "-"}</td>
-                <td>
-                  <span className={r.active ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
-                    {r.active ? "actief" : "historisch"}
-                  </span>
-                </td>
                 <td className="whitespace-nowrap">
                   <a href={`/exchange-rates?edit=${r.id}`} className="text-brand-600 hover:underline text-xs mr-3">
                     Aanpassen
                   </a>
-                  <form action={toggleExchangeRateActive.bind(null, r.id, r.active)} className="inline">
-                    {r.active ? (
-                      <ConfirmButton message={`Koers 1 ${r.baseCurrency} = ${fmtMoney(r.rate, 6)} ${r.quoteCurrency} deactiveren? Bestaande offertes blijven ongewijzigd.`}>
-                        Deactiveren
-                      </ConfirmButton>
-                    ) : (
-                      <button className="text-xs text-gray-500 hover:underline">Activeren</button>
-                    )}
+                  <form action={deleteExchangeRate.bind(null, r.id)} className="inline">
+                    <ConfirmButton
+                      message={`Weet je zeker dat je de koers 1 ${r.baseCurrency} = ${fmtMoney(r.rate, 6)} ${r.quoteCurrency} wilt verwijderen? Bestaande offertes blijven ongewijzigd. Dit kan niet ongedaan worden gemaakt.`}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Verwijderen
+                    </ConfirmButton>
                   </form>
                 </td>
               </tr>
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center text-gray-400 py-6">
+                <td colSpan={6} className="text-center text-gray-400 py-6">
                   {rates.length === 0
                     ? "Nog geen wisselkoersen ingevoerd."
                     : "Geen wisselkoersen gevonden met deze filters."}
@@ -215,7 +197,7 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
           </form>
         )}
         <p className="text-xs text-gray-400 mt-3">
-          Een nieuwe koers voor hetzelfde valutapaar vervangt automatisch de vorige (die historisch wordt bewaard).
+          Een nieuwe koers voor hetzelfde valutapaar vervangt automatisch de vorige.
         </p>
       </div>
     </div>

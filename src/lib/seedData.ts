@@ -330,12 +330,12 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
 
   await prisma.customerDestination.createMany({
     data: [
-      { customerId: amsterdamBloom.id, destinationId: amsterdam.id, isDefault: true, active: true },
+      { customerId: amsterdamBloom.id, destinationId: amsterdam.id, isDefault: true },
       // Demonstrates the multi-destination case: Gulf Fresh's default is
       // Dubai, but it also ships to Doha under the same account.
-      { customerId: gulfFresh.id, destinationId: dubai.id, isDefault: true, active: true },
-      { customerId: gulfFresh.id, destinationId: doha.id, isDefault: false, active: true },
-      { customerId: dohaGarden.id, destinationId: doha.id, isDefault: true, active: true },
+      { customerId: gulfFresh.id, destinationId: dubai.id, isDefault: true },
+      { customerId: gulfFresh.id, destinationId: doha.id, isDefault: false },
+      { customerId: dohaGarden.id, destinationId: doha.id, isDefault: true },
     ],
   });
 

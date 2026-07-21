@@ -1,12 +1,13 @@
 import { prisma } from "@/lib/db";
-import { saveFarm, toggleFarmActive, addFarmAlias, removeFarmAlias } from "./actions";
+import ConfirmButton from "@/components/ConfirmButton";
+import { saveFarm, deleteFarm, addFarmAlias, removeFarmAlias } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-export default async function FarmsPage({ searchParams }: { searchParams: { edit?: string } }) {
+export default async function FarmsPage({ searchParams }: { searchParams: { edit?: string; msg?: string; err?: string } }) {
   const [farms, origins] = await Promise.all([
     prisma.farm.findMany({ orderBy: { name: "asc" }, include: { aliases: true, origin: true } }),
-    prisma.origin.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
+    prisma.origin.findMany({ orderBy: { city: "asc" } }),
   ]);
 
   const editing = searchParams.edit ? farms.find((f) => f.id === searchParams.edit) : null;
@@ -17,6 +18,13 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
         <h1 className="text-2xl font-semibold text-gray-900">Leveranciers</h1>
         <p className="text-sm text-gray-500 mt-1">Leveranciers, hun vertrekpunt en bekende naamvarianten (aliassen).</p>
       </div>
+
+      {searchParams.msg === "deleted" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">Leverancier verwijderd.</div>
+      )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
+      )}
 
       <div className="space-y-4">
         {farms.map((farm) => (
@@ -29,14 +37,16 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
                 <div className="text-xs text-gray-500 mt-0.5">Vertrekpunt: {farm.origin?.city ?? "-"}</div>
               </div>
               <div className="flex items-center gap-3">
-                <span className={farm.active ? "badge-high" : "badge-low"}>{farm.active ? "actief" : "inactief"}</span>
                 <a href={`/farms?edit=${farm.id}`} className="text-xs text-brand-600 hover:underline">
                   Bewerken
                 </a>
-                <form action={toggleFarmActive.bind(null, farm.id, farm.active)}>
-                  <button className="text-xs text-gray-500 hover:underline">
-                    {farm.active ? "Deactiveren" : "Activeren"}
-                  </button>
+                <form action={deleteFarm.bind(null, farm.id)}>
+                  <ConfirmButton
+                    message={`Weet je zeker dat je leverancier "${farm.name}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`}
+                    className="text-xs text-red-600 hover:underline"
+                  >
+                    Verwijderen
+                  </ConfirmButton>
                 </form>
               </div>
             </div>

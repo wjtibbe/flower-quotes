@@ -15,15 +15,14 @@ import {
 import {
   updateSupplierLink,
   duplicateSupplierLink,
-  toggleSupplierLinkActive,
+  deleteSupplierLink,
   bulkUpdateSupplierLinks,
   bulkDuplicateSupplierLinks,
-  bulkDeactivateSupplierLinks,
+  bulkDeleteSupplierLinks,
 } from "./actions";
 
 export interface AssortmentRow {
   id: string;
-  active: boolean;
   farmId: string;
   farmName: string;
   supplierCode: string | null;
@@ -56,11 +55,9 @@ const emptyEdit: BulkEditInput = {
   supplierCode: "",
   notesEnabled: false,
   notes: "",
-  statusEnabled: false,
-  active: true,
 };
 
-type Modal = null | "edit" | "duplicate" | "deactivate";
+type Modal = null | "edit" | "duplicate" | "delete";
 
 export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]; farms: FarmOption[] }) {
   const router = useRouter();
@@ -152,8 +149,8 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
           <button className="btn-secondary py-1 px-3 text-sm" disabled={isPending} onClick={() => setModal("duplicate")}>
             Dupliceren
           </button>
-          <button className="btn-secondary py-1 px-3 text-sm" disabled={isPending} onClick={() => setModal("deactivate")}>
-            Deactiveren
+          <button className="btn-secondary py-1 px-3 text-sm" disabled={isPending} onClick={() => setModal("delete")}>
+            Verwijderen
           </button>
           <button className="text-sm text-gray-500 hover:underline ml-1" disabled={isPending} onClick={clearSelection}>
             Selectie wissen
@@ -189,7 +186,7 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
             {rows.map((p) => {
               const isSel = selectedVisible.includes(p.id);
               return (
-                <tr key={p.id} className={`${p.active ? "" : "opacity-50"} ${isSel ? "bg-brand-50/50" : ""}`}>
+                <tr key={p.id} className={isSel ? "bg-brand-50/50" : ""}>
                   <td>
                     <input
                       type="checkbox"
@@ -286,9 +283,15 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                         <button className="btn-secondary py-1 px-2 text-xs">Kopie maken</button>
                       </form>
                     </details>
-                    <form action={toggleSupplierLinkActive.bind(null, p.id, p.active)} className="inline">
-                      <button className="text-xs text-gray-500 hover:underline">
-                        {p.active ? "Deactiveren" : "Activeren"}
+                    <form action={deleteSupplierLink.bind(null, p.id)} className="inline">
+                      <button
+                        className="text-xs text-red-600 hover:underline"
+                        onClick={(e) => {
+                          if (!window.confirm(`Weet je zeker dat je "${p.productName} ${p.variety ?? ""}" van ${p.farmName} wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`))
+                            e.preventDefault();
+                        }}
+                      >
+                        Verwijderen
                       </button>
                     </form>
                   </td>
@@ -391,20 +394,6 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                 onChange={(e) => setEdit((s) => ({ ...s, notes: e.target.value }))}
               />
             </EditField>
-            <EditField
-              label="Status aanpassen"
-              enabled={edit.statusEnabled}
-              onToggle={(v) => setEdit((e) => ({ ...e, statusEnabled: v }))}
-            >
-              <select
-                className="input py-1 text-sm"
-                value={edit.active ? "active" : "inactive"}
-                onChange={(e) => setEdit((s) => ({ ...s, active: e.target.value === "active" }))}
-              >
-                <option value="active">Actief</option>
-                <option value="inactive">Inactief</option>
-              </select>
-            </EditField>
           </div>
 
           {summary.length > 0 && (
@@ -460,13 +449,12 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
         </Modal>
       )}
 
-      {/* --- Bulk deactivate modal --- */}
-      {modal === "deactivate" && (
-        <Modal title="Artikelen deactiveren" onClose={() => setModal(null)}>
+      {/* --- Bulk delete modal --- */}
+      {modal === "delete" && (
+        <Modal title="Artikelen verwijderen" onClose={() => setModal(null)}>
           <p className="text-sm text-gray-700">
-            Weet je zeker dat je <strong>{selectedVisible.length}</strong> artikel(en) wilt deactiveren? Deze artikelen
-            zijn daarna niet meer actief beschikbaar in het assortiment. Je kunt ze later weer activeren (dit verwijdert
-            niets permanent).
+            Weet je zeker dat je <strong>{selectedVisible.length}</strong> artikel(en) wilt verwijderen? Deze actie kan
+            <strong> niet ongedaan </strong> worden gemaakt.
           </p>
           <div className="mt-5 flex justify-end gap-2">
             <button className="btn-secondary" onClick={() => setModal(null)} disabled={isPending}>
@@ -475,9 +463,9 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
             <button
               className="btn-primary"
               disabled={isPending}
-              onClick={() => runBulk(() => bulkDeactivateSupplierLinks(selectedVisible))}
+              onClick={() => runBulk(() => bulkDeleteSupplierLinks(selectedVisible))}
             >
-              {isPending ? "Bezig..." : "Deactiveren"}
+              {isPending ? "Bezig..." : "Verwijderen"}
             </button>
           </div>
         </Modal>

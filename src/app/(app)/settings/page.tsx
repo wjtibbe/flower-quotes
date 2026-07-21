@@ -1,9 +1,10 @@
 import { prisma } from "@/lib/db";
-import { addUser, toggleUserActive } from "./actions";
+import ConfirmButton from "@/components/ConfirmButton";
+import { addUser, deleteUser } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-export default async function SettingsPage() {
+export default async function SettingsPage({ searchParams }: { searchParams: { msg?: string; err?: string } }) {
   const users = await prisma.user.findMany({ orderBy: { createdAt: "asc" } });
 
   return (
@@ -11,6 +12,13 @@ export default async function SettingsPage() {
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Instellingen</h1>
       </div>
+
+      {searchParams.msg === "deleted" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">Gebruiker verwijderd.</div>
+      )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
+      )}
 
       <div className="card p-4">
         <h2 className="font-semibold text-gray-800 mb-2">Afrondingsinstellingen</h2>
@@ -29,7 +37,6 @@ export default async function SettingsPage() {
               <th>Naam</th>
               <th>E-mail</th>
               <th>Rol</th>
-              <th>Status</th>
               <th></th>
             </tr>
           </thead>
@@ -40,13 +47,13 @@ export default async function SettingsPage() {
                 <td>{u.email}</td>
                 <td>{u.role}</td>
                 <td>
-                  <span className={u.active ? "badge-high" : "badge-low"}>{u.active ? "actief" : "inactief"}</span>
-                </td>
-                <td>
-                  <form action={toggleUserActive.bind(null, u.id, u.active)}>
-                    <button className="text-xs text-gray-500 hover:underline">
-                      {u.active ? "Deactiveren" : "Activeren"}
-                    </button>
+                  <form action={deleteUser.bind(null, u.id)}>
+                    <ConfirmButton
+                      message={`Weet je zeker dat je gebruiker "${u.name}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Verwijderen
+                    </ConfirmButton>
                   </form>
                 </td>
               </tr>

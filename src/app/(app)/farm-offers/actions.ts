@@ -125,7 +125,6 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
     if (existing.farmOffer.farmId) {
       const profile = await prisma.packagingWeightProfile.findFirst({
         where: {
-          active: true,
           farmId: existing.farmOffer.farmId,
           productVariantId: data.productVariantId,
           boxType: data.boxType,
@@ -165,7 +164,6 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
   ) {
     const existingProfile = await prisma.packagingWeightProfile.findFirst({
       where: {
-        active: true,
         farmId: line.farmOffer.farmId,
         productVariantId: line.productVariantId,
         boxType: line.boxType,
@@ -269,13 +267,13 @@ export async function bulkAddOfferLines(offerId: string, formData: FormData): Pr
 
     let productVariantId: string | null = null;
     const matches = await prisma.productVariant.findMany({
-      where: { active: true, variety: { equals: description, mode: "insensitive" } },
+      where: { variety: { equals: description, mode: "insensitive" } },
     });
     if (matches.length === 1) {
       productVariantId = matches[0].id;
       if (!weightPerBoxKg && offer.farmId) {
         const profile = await prisma.packagingWeightProfile.findFirst({
-          where: { active: true, farmId: offer.farmId, productVariantId, boxType, stemsPerBox },
+          where: { farmId: offer.farmId, productVariantId, boxType, stemsPerBox },
           orderBy: { effectiveFrom: "desc" },
         });
         if (profile) weightPerBoxKg = profile.weightPerBoxKg.toString();

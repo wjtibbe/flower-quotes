@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
+import ConfirmButton from "@/components/ConfirmButton";
 import {
   saveCustomer,
-  toggleCustomerActive,
+  deleteCustomer,
   addCustomerDestination,
   setDefaultCustomerDestination,
-  deactivateCustomerDestination,
+  deleteCustomerDestination,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -15,15 +16,16 @@ interface Params {
   q?: string;
   country?: string;
   destination?: string;
-  status?: string;
   sort?: string;
   dir?: string;
   msg?: string;
+  err?: string;
 }
 
 const MESSAGES: Record<string, { text: string; ok: boolean }> = {
   "destination-link-added": { text: "Bestemming aan klant gekoppeld.", ok: true },
   "destination-link-exists": { text: "Deze bestemming is al aan deze klant gekoppeld.", ok: false },
+  deleted: { text: "Klant verwijderd.", ok: true },
 };
 
 export default async function CustomersPage({ searchParams }: { searchParams: Params }) {
@@ -34,15 +36,12 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
         customerDestinations: { include: { destination: true }, orderBy: { createdAt: "asc" } },
       },
     }),
-    prisma.destination.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
+    prisma.destination.findMany({ orderBy: { city: "asc" } }),
   ]);
 
-  const status = searchParams.status ?? "active";
   const contains = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase().includes(b.toLowerCase());
 
   let rows = customers.filter((c) => {
-    if (status === "active" && !c.active) return false;
-    if (status === "inactive" && c.active) return false;
     if (searchParams.country && !contains(c.country, searchParams.country)) return false;
     if (searchParams.destination && c.destinationId !== searchParams.destination) return false;
     if (searchParams.q) {
@@ -62,7 +61,6 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
       case "country": return c.country ?? "";
       case "destination": return c.destination?.city ?? "";
       case "currency": return c.defaultCurrency;
-      case "status": return c.active ? "0" : "1";
       default: return c.companyName;
     }
   };
@@ -70,7 +68,7 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
 
   const editing = searchParams.edit ? customers.find((c) => c.id === searchParams.edit) : null;
   const countryOptions = [...new Set(customers.map((c) => c.country).filter((x): x is string => !!x))].sort();
-  const hasFilters = !!(searchParams.q || searchParams.country || searchParams.destination || (searchParams.status && searchParams.status !== "active"));
+  const hasFilters = !!(searchParams.q || searchParams.country || searchParams.destination);
   const msg = searchParams.msg ? MESSAGES[searchParams.msg] : null;
 
   const sortLink = (key: string) => {
@@ -104,6 +102,9 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
           {msg.text}
         </div>
       )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
+      )}
 
       <form className="card p-4 flex flex-wrap gap-3 items-end">
         <div>
@@ -122,14 +123,6 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
             {destinations.map((d) => (
               <option key={d.id} value={d.id}>{d.city}</option>
             ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Status</label>
-          <select name="status" defaultValue={status} className="input py-1 w-28">
-            <option value="active">Actief</option>
-            <option value="inactive">Inactief</option>
-            <option value="all">Alle</option>
           </select>
         </div>
         <div className="flex-1 min-w-40">
@@ -155,15 +148,14 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
               <Th k="country">Land</Th>
               <Th k="destination">Standaardbestemming</Th>
               <Th k="currency">Valuta</Th>
-              <Th k="status">Status</Th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {rows.map((c) => {
-              const activeLinks = c.customerDestinations.filter((l) => l.active);
+              const links = c.customerDestinations;
               return (
-                <tr key={c.id} className={c.active ? "" : "opacity-50"}>
+                <tr key={c.id}>
                   <td className="font-medium">{c.companyName}</td>
                   <td>{c.contactName ?? "-"}</td>
                   <td>{c.whatsappNumber ?? "-"}</td>
@@ -177,18 +169,15 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
                     )}
                   </td>
                   <td>{c.defaultCurrency}</td>
-                  <td>
-                    <span className={c.active ? "badge-high" : "badge-low"}>{c.active ? "actief" : "inactief"}</span>
-                  </td>
                   <td className="whitespace-nowrap">
                     <a href={`/customers?edit=${c.id}`} className="text-brand-600 hover:underline text-xs mr-3">
                       Bewerken
                     </a>
                     <details className="inline-block mr-3">
-                      <summary className="text-xs text-brand-600 cursor-pointer inline">Bestemmingen ({activeLinks.length})</summary>
+                      <summary className="text-xs text-brand-600 cursor-pointer inline">Bestemmingen ({links.length})</summary>
                       <div className="mt-2 bg-gray-50 p-2 rounded text-xs space-y-2 min-w-64">
-                        {activeLinks.length === 0 && <div className="text-gray-400">Geen actieve bestemmingen.</div>}
-                        {activeLinks.map((l) => (
+                        {links.length === 0 && <div className="text-gray-400">Geen bestemmingen gekoppeld.</div>}
+                        {links.map((l) => (
                           <div key={l.id} className="flex items-center justify-between gap-2">
                             <span>
                               {l.destination.city}
@@ -200,8 +189,8 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
                                   <button className="text-brand-600 hover:underline">Standaard maken</button>
                                 </form>
                               )}
-                              <form action={deactivateCustomerDestination.bind(null, l.id)}>
-                                <button className="text-gray-500 hover:underline">Deactiveren</button>
+                              <form action={deleteCustomerDestination.bind(null, l.id)}>
+                                <button className="text-red-600 hover:underline">Verwijderen</button>
                               </form>
                             </span>
                           </div>
@@ -210,7 +199,7 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
                           <select name="destinationId" className="input py-1 text-xs flex-1" defaultValue="">
                             <option value="" disabled>Bestemming toevoegen...</option>
                             {destinations
-                              .filter((d) => !activeLinks.some((l) => l.destinationId === d.id))
+                              .filter((d) => !links.some((l) => l.destinationId === d.id))
                               .map((d) => (
                                 <option key={d.id} value={d.id}>{d.city}</option>
                               ))}
@@ -219,10 +208,13 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
                         </form>
                       </div>
                     </details>
-                    <form action={toggleCustomerActive.bind(null, c.id, c.active)} className="inline">
-                      <button className="text-xs text-gray-500 hover:underline">
-                        {c.active ? "Deactiveren" : "Activeren"}
-                      </button>
+                    <form action={deleteCustomer.bind(null, c.id)} className="inline">
+                      <ConfirmButton
+                        message={`Weet je zeker dat je klant "${c.companyName}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`}
+                        className="text-xs text-red-600 hover:underline"
+                      >
+                        Verwijderen
+                      </ConfirmButton>
                     </form>
                   </td>
                 </tr>
@@ -230,7 +222,7 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={9} className="text-center text-gray-400 py-6">
+                <td colSpan={8} className="text-center text-gray-400 py-6">
                   {customers.length === 0 ? "Nog geen klanten toegevoegd." : "Geen klanten gevonden met deze filters."}
                 </td>
               </tr>
@@ -310,7 +302,7 @@ export default async function CustomersPage({ searchParams }: { searchParams: Pa
             <textarea className="input" name="notes" rows={2} defaultValue={editing?.notes ?? ""} />
           </div>
 
-          {editing && editing.customerDestinations.filter((l) => l.active).length === 0 && (
+          {editing && editing.customerDestinations.length === 0 && (
             <div className="col-span-2 text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded p-2">
               Geen standaardbestemming ingesteld. Voeg via "Bestemmingen" in de tabel hierboven een bestemming toe.
             </div>

@@ -1,17 +1,18 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtMoney, fmtDate } from "@/lib/format";
+import ConfirmButton from "@/components/ConfirmButton";
 import {
   createOrigin,
   createDestination,
   createRoute,
   addFreightRate,
-  toggleFreightRateActive,
-  toggleRouteActive,
+  deleteFreightRate,
+  deleteRoute,
   toggleRouteSupportsCfr,
   toggleRouteSupportsDdp,
   addRouteCost,
-  toggleRouteCostActive,
+  deleteRouteCost,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -38,14 +39,14 @@ const CATEGORY_LABELS: Record<string, string> = {
   OTHER: "Overige",
 };
 
-/** The additional cost that pricing would use now: active, valid, newest per (category,name). */
+/** The additional cost that pricing would use now: valid, newest per (category,name). */
 function currentCosts<
-  T extends { id: string; active: boolean; effectiveFrom: Date; effectiveTo: Date | null; category: string | null; name: string | null },
+  T extends { id: string; effectiveFrom: Date; effectiveTo: Date | null; category: string | null; name: string | null },
 >(costs: T[]): Set<string> {
   const now = new Date();
   const chosen = new Map<string, string>();
   for (const c of [...costs].sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())) {
-    if (!c.active || !c.category || c.effectiveFrom > now || (c.effectiveTo && c.effectiveTo < now)) continue;
+    if (!c.category || c.effectiveFrom > now || (c.effectiveTo && c.effectiveTo < now)) continue;
     const key = `${c.category}::${(c.name ?? "").toLowerCase()}`;
     if (!chosen.has(key)) chosen.set(key, c.id);
   }
@@ -59,7 +60,6 @@ interface Params {
   toCountry?: string;
   transport?: string;
   currency?: string;
-  status?: string;
   q?: string;
   sort?: string;
   dir?: string;
@@ -75,11 +75,11 @@ const MESSAGES: Record<string, { text: string; ok: boolean }> = {
   "route-exists": { text: "Deze route (vertrek + bestemming + transporttype) bestaat al.", ok: false },
 };
 
-/** The rate pricing would use right now: active, within validity, newest effectiveFrom. */
-function currentRate<T extends { active: boolean; effectiveFrom: Date; effectiveTo: Date | null }>(rates: T[]): T | undefined {
+/** The rate pricing would use right now: within validity, newest effectiveFrom. */
+function currentRate<T extends { effectiveFrom: Date; effectiveTo: Date | null }>(rates: T[]): T | undefined {
   const now = new Date();
   return rates
-    .filter((r) => r.active && r.effectiveFrom <= now && (!r.effectiveTo || r.effectiveTo >= now))
+    .filter((r) => r.effectiveFrom <= now && (!r.effectiveTo || r.effectiveTo >= now))
     .sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())[0];
 }
 
@@ -94,19 +94,16 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
       },
       orderBy: { createdAt: "asc" },
     }),
-    prisma.origin.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
-    prisma.destination.findMany({ where: { active: true }, orderBy: { city: "asc" } }),
+    prisma.origin.findMany({ orderBy: { city: "asc" } }),
+    prisma.destination.findMany({ orderBy: { city: "asc" } }),
   ]);
 
-  const status = searchParams.status ?? "active";
   const ci = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase() === b.toLowerCase();
   const contains = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase().includes(b.toLowerCase());
 
   let rows = routes
     .map((r) => ({ route: r, rate: currentRate(r.freightRates) }))
     .filter(({ route, rate }) => {
-      if (status === "active" && !route.active) return false;
-      if (status === "inactive" && route.active) return false;
       if (searchParams.from && !ci(route.origin.city, searchParams.from)) return false;
       if (searchParams.to && !ci(route.destination.city, searchParams.to)) return false;
       if (searchParams.fromCountry && !ci(route.origin.country, searchParams.fromCountry)) return false;
@@ -155,7 +152,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
   const cityOptions = (list: { city: string }[]) => [...new Set(list.map((x) => x.city))].sort();
   const countryOptions = (list: { country: string }[]) => [...new Set(list.map((x) => x.country))].sort();
   const currencyOptions = [...new Set(routes.flatMap((r) => r.freightRates.map((fr) => fr.currency)))].sort();
-  const hasFilters = !!(searchParams.from || searchParams.to || searchParams.fromCountry || searchParams.toCountry || searchParams.transport || searchParams.currency || searchParams.q || (searchParams.status && searchParams.status !== "active"));
+  const hasFilters = !!(searchParams.from || searchParams.to || searchParams.fromCountry || searchParams.toCountry || searchParams.transport || searchParams.currency || searchParams.q);
 
   const sortLink = (key: string) => {
     const p = new URLSearchParams();
@@ -234,14 +231,6 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
             {currencyOptions.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
-        <div>
-          <label className="label">Status</label>
-          <select name="status" defaultValue={status} className="input py-1 w-24">
-            <option value="active">Actief</option>
-            <option value="inactive">Inactief</option>
-            <option value="all">Alle</option>
-          </select>
-        </div>
         <div className="flex-1 min-w-36">
           <label className="label">Zoeken</label>
           <input name="q" defaultValue={searchParams.q ?? ""} placeholder="Vrij zoeken..." className="input py-1" />
@@ -267,13 +256,12 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
               <Th k="rate">Tarief</Th>
               <Th k="unit">Eenheid</Th>
               <Th k="effectiveFrom">Ingangsdatum</Th>
-              <th>Status</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
             {rows.map(({ route, rate }) => (
-              <tr key={route.id} className={route.active ? "" : "opacity-50"}>
+              <tr key={route.id}>
                 <td className="py-1.5 font-medium">
                   {route.origin.city}
                   {route.origin.code && <span className="ml-1 text-xs text-gray-400">{route.origin.code}</span>}
@@ -289,9 +277,6 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                 <td className="py-1.5">{rate ? fmtMoney(rate.ratePerKg, 4) : <span className="text-red-500">geen tarief</span>}</td>
                 <td className="py-1.5">{rate ? UNIT_LABELS[rate.rateUnit] : "-"}</td>
                 <td className="py-1.5">{rate ? fmtDate(rate.effectiveFrom) : "-"}</td>
-                <td className="py-1.5">
-                  <span className={route.active ? "badge-high" : "badge-low"}>{route.active ? "actief" : "inactief"}</span>
-                </td>
                 <td className="py-1.5 whitespace-nowrap">
                   <details>
                     <summary className="text-xs text-brand-600 cursor-pointer">Tarieven & instellingen</summary>
@@ -303,7 +288,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                             <th>Eenheid</th>
                             <th>Geldig van</th>
                             <th>Geldig tot</th>
-                            <th>Status</th>
+                            <th></th>
                             <th></th>
                           </tr>
                         </thead>
@@ -314,20 +299,15 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                               <td>{UNIT_LABELS[fr.rateUnit]}</td>
                               <td>{fmtDate(fr.effectiveFrom)}</td>
                               <td>{fr.effectiveTo ? fmtDate(fr.effectiveTo) : "-"}</td>
+                              <td>{rate?.id === fr.id && <span className="badge-high">in gebruik</span>}</td>
                               <td>
-                                {rate?.id === fr.id ? (
-                                  <span className="badge-high">in gebruik</span>
-                                ) : fr.active ? (
-                                  <span className="badge bg-gray-100 text-gray-600">actief</span>
-                                ) : (
-                                  <span className="badge-low">inactief</span>
-                                )}
-                              </td>
-                              <td>
-                                <form action={toggleFreightRateActive.bind(null, fr.id, fr.active)}>
-                                  <button className="text-xs text-gray-500 hover:underline">
-                                    {fr.active ? "Deactiveren" : "Activeren"}
-                                  </button>
+                                <form action={deleteFreightRate.bind(null, fr.id)}>
+                                  <ConfirmButton
+                                    message="Weet je zeker dat je dit tarief wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
+                                    className="text-xs text-red-600 hover:underline"
+                                  >
+                                    Verwijderen
+                                  </ConfirmButton>
                                 </form>
                               </td>
                             </tr>
@@ -379,10 +359,13 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                             DDP: {route.supportsDdp ? "aan" : "uit"}
                           </button>
                         </form>
-                        <form action={toggleRouteActive.bind(null, route.id, route.active)}>
-                          <button className="text-xs text-gray-500 hover:underline">
-                            Route {route.active ? "deactiveren" : "activeren"}
-                          </button>
+                        <form action={deleteRoute.bind(null, route.id)}>
+                          <ConfirmButton
+                            message={`Weet je zeker dat je de route ${route.origin.city} → ${route.destination.city} wilt verwijderen? Alle tarieven en aanvullende kosten van deze route worden ook verwijderd. Dit kan niet ongedaan worden gemaakt.`}
+                            className="text-xs text-red-600 hover:underline"
+                          >
+                            Route verwijderen
+                          </ConfirmButton>
                         </form>
                       </div>
 
@@ -400,7 +383,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                                   <th>Eenheid</th>
                                   <th>Geldig van</th>
                                   <th>Geldig tot</th>
-                                  <th>Status</th>
+                                  <th></th>
                                   <th></th>
                                 </tr>
                               </thead>
@@ -413,20 +396,15 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                                     <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
                                     <td>{fmtDate(c.effectiveFrom)}</td>
                                     <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
+                                    <td>{activeCostIds.has(c.id) && <span className="badge-high">in gebruik</span>}</td>
                                     <td>
-                                      {activeCostIds.has(c.id) ? (
-                                        <span className="badge-high">in gebruik</span>
-                                      ) : c.active ? (
-                                        <span className="badge bg-gray-100 text-gray-600">actief</span>
-                                      ) : (
-                                        <span className="badge-low">inactief</span>
-                                      )}
-                                    </td>
-                                    <td>
-                                      <form action={toggleRouteCostActive.bind(null, c.id, c.active)}>
-                                        <button className="text-xs text-gray-500 hover:underline">
-                                          {c.active ? "Deactiveren" : "Activeren"}
-                                        </button>
+                                      <form action={deleteRouteCost.bind(null, c.id)}>
+                                        <ConfirmButton
+                                          message="Weet je zeker dat je deze aanvullende kost wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
+                                          className="text-xs text-red-600 hover:underline"
+                                        >
+                                          Verwijderen
+                                        </ConfirmButton>
                                       </form>
                                     </td>
                                   </tr>

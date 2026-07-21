@@ -30,8 +30,8 @@ export interface ResolvedPricingContext {
 
 /**
  * Resolves everything the pricing engine needs for one (farm offer line,
- * customer) pair from the database: route, active freight rate, active DDP
- * cost rates, and an active exchange rate snapshot if currency conversion is
+ * customer) pair from the database: route, freight rate, DDP cost
+ * rates, and an exchange rate snapshot if currency conversion is
  * required. Returns whatever it could find - missing pieces simply come back
  * null and surface as validation blockers, never as thrown errors, so the
  * review UI can show exactly what's missing.
@@ -75,9 +75,9 @@ export async function resolvePricingContext(
 
   if (originId && destinationId) {
     // A route may exist per transport type; flower freight is priced on the
-    // air route when there is one, otherwise the first active alternative.
+    // air route when there is one, otherwise the first alternative.
     const routes = await prisma.route.findMany({
-      where: { originId, destinationId, active: true },
+      where: { originId, destinationId },
       orderBy: { createdAt: "asc" },
     });
     const route = routes.find((r) => r.transportType === "AIR") ?? routes[0];
@@ -87,14 +87,13 @@ export async function resolvePricingContext(
       if (incoterm === "DDP" && !route.supportsDdp) routeSupportsIncoterm = false;
 
       if (incoterm === "CFR" || incoterm === "DDP") {
-        // The applicable rate: active, already effective, not yet expired;
+        // The applicable rate: already effective, not yet expired;
         // the most recently effective one wins. A future-dated rate is not
         // used until its effectiveFrom passes.
         const now = new Date();
         const rate = await prisma.freightRate.findFirst({
           where: {
             routeId: route.id,
-            active: true,
             effectiveFrom: { lte: now },
             OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
           },
@@ -155,17 +154,16 @@ export async function resolvePricingContext(
 /**
  * Resolves the route's additional costs that are valid right now. Cost lines
  * are grouped by (category, name); within each group the currently-valid,
- * newest-effectiveFrom active row wins - so multiple costs coexist, a
- * future-dated row supersedes automatically, and deactivating a row drops it.
- * A legacy row without category/rateUnit (only costType) is skipped by the
- * new UI path but still resolvable via its backfilled fields.
+ * newest-effectiveFrom row wins - so multiple costs coexist, a future-dated
+ * row supersedes automatically, and deleting a row drops it. A legacy row
+ * without category/rateUnit (only costType) is skipped by the new UI path but
+ * still resolvable via its backfilled fields.
  */
 async function resolveAdditionalCosts(routeId: string): Promise<AdditionalCostInput[]> {
   const now = new Date();
   const rows = await prisma.ddpCostRate.findMany({
     where: {
       routeId,
-      active: true,
       effectiveFrom: { lte: now },
       OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
     },
@@ -189,16 +187,15 @@ async function resolveAdditionalCosts(routeId: string): Promise<AdditionalCostIn
 
 /**
  * The exchange rate to use right now for the {from,to} pair, in either stored
- * direction. Same "currently valid" rule as freight/additional costs: active,
+ * direction. Same "currently valid" rule as freight/additional costs:
  * already effective, not yet expired, newest effectiveFrom wins - so a
- * future-dated rate isn't used early and a closed one drops out, while the
- * simple "one open-ended active rate per pair" setup keeps working unchanged.
+ * future-dated rate isn't used early and a closed one drops out. There is
+ * one rate per pair (add replaces it).
  */
 async function findExchangeRate(from: CurrencyCode, to: CurrencyCode) {
   const now = new Date();
   return prisma.exchangeRate.findFirst({
     where: {
-      active: true,
       effectiveFrom: { lte: now },
       OR: [
         { effectiveTo: null, baseCurrency: from, quoteCurrency: to },

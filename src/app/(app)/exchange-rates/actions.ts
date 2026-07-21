@@ -21,9 +21,10 @@ function validateRate(baseCurrency: string, quoteCurrency: string, rateRaw: stri
 }
 
 /**
- * Adds a new current rate for a pair. Any existing active rate for the exact
- * same pair is deactivated first (kept for history, never deleted), which
- * enforces "one active record per pair" and prevents duplicate active pairs.
+ * Sets the current rate for a pair. Exactly one rate exists per pair: any
+ * existing row for the same pair is deleted first, then the new one inserted.
+ * Historical quote snapshots are untouched because quotes store their own
+ * exchange-rate value and never read this table back.
  */
 export async function addExchangeRate(formData: FormData): Promise<void> {
   const baseCurrency = String(formData.get("baseCurrency") ?? "");
@@ -34,9 +35,8 @@ export async function addExchangeRate(formData: FormData): Promise<void> {
 
   const updatedById = await currentUserId();
   await prisma.$transaction([
-    prisma.exchangeRate.updateMany({
-      where: { baseCurrency: baseCurrency as Currency, quoteCurrency: quoteCurrency as Currency, active: true },
-      data: { active: false },
+    prisma.exchangeRate.deleteMany({
+      where: { baseCurrency: baseCurrency as Currency, quoteCurrency: quoteCurrency as Currency },
     }),
     prisma.exchangeRate.create({
       data: { baseCurrency: baseCurrency as Currency, quoteCurrency: quoteCurrency as Currency, rate, notes, updatedById },
@@ -48,9 +48,8 @@ export async function addExchangeRate(formData: FormData): Promise<void> {
 
 /**
  * Edits an existing rate record in place (rate value / notes). The currency
- * pair itself is not editable here - change it by adding a new pair - so no
- * duplicate active pair can be introduced by an edit. Historical quote
- * snapshots are untouched because they never read this table.
+ * pair itself is not editable here - change it by adding it again. Historical
+ * quote snapshots are untouched because they never read this table.
  */
 export async function editExchangeRate(id: string, formData: FormData): Promise<void> {
   const existing = await prisma.exchangeRate.findUniqueOrThrow({ where: { id } });
@@ -64,9 +63,9 @@ export async function editExchangeRate(id: string, formData: FormData): Promise<
   redirect("/exchange-rates?msg=rate-updated");
 }
 
-/** Activates/deactivates a rate. Deactivating keeps the row for history. */
-export async function toggleExchangeRateActive(id: string, active: boolean): Promise<void> {
-  const updatedById = await currentUserId();
-  await prisma.exchangeRate.update({ where: { id }, data: { active: !active, updatedById } });
+/** Hard-deletes a rate. Safe: quotes snapshot their own rate, never this row. */
+export async function deleteExchangeRate(id: string): Promise<void> {
+  await prisma.exchangeRate.delete({ where: { id } });
   revalidatePath("/exchange-rates");
+  redirect("/exchange-rates?msg=rate-deleted");
 }

@@ -27,7 +27,6 @@ export default async function ReviewFarmOfferPage({
   if (!offer) notFound();
 
   const variants = await prisma.productVariant.findMany({
-    where: { active: true },
     include: { product: true },
     orderBy: { createdAt: "asc" },
   });

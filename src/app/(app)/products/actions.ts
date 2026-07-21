@@ -10,6 +10,7 @@ import {
   validateBulkEdit,
   type BulkEditInput,
 } from "@/lib/bulkSelection";
+import { blockedDeleteMessage } from "@/lib/deletionMessage";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -107,32 +108,27 @@ export async function bulkDuplicateSupplierLinks(ids: string[]): Promise<BulkAct
           stemsPerBox: s.stemsPerBox,
           weightPerBoxKg: s.weightPerBoxKg,
           notes: s.notes,
-          active: s.active,
         },
       }),
     ),
   );
   revalidatePath("/products");
-  revalidatePath("/weight-profiles");
   return { ok: true, message: `${sources.length} artikel(en) succesvol gedupliceerd.` };
 }
 
 /**
- * Bulk-deactivates the selected supplier links (soft delete - the same
- * "Deactiveren" behaviour as the per-row action; records are kept and can be
- * reactivated). Single updateMany, no per-item request.
+ * Bulk-deletes the selected supplier links (assortment rows are leaf records,
+ * so this is a real delete). Single deleteMany, no per-item request.
  */
-export async function bulkDeactivateSupplierLinks(ids: string[]): Promise<BulkActionResult> {
+export async function bulkDeleteSupplierLinks(ids: string[]): Promise<BulkActionResult> {
   const validation = await validateBulkIds(ids);
   if ("error" in validation) return { ok: false, message: validation.error };
 
-  const res = await prisma.packagingWeightProfile.updateMany({
+  const res = await prisma.packagingWeightProfile.deleteMany({
     where: { id: { in: validation.ids } },
-    data: { active: false },
   });
   revalidatePath("/products");
-  revalidatePath("/weight-profiles");
-  return { ok: true, message: `${res.count} artikel(en) gedeactiveerd.` };
+  return { ok: true, message: `${res.count} artikel(en) verwijderd.` };
 }
 
 /**
@@ -338,18 +334,13 @@ export async function duplicateSupplierLink(id: string, formData: FormData): Pro
   revalidatePath("/weight-profiles");
 }
 
-export async function toggleSupplierLinkActive(id: string, active: boolean): Promise<void> {
-  await prisma.packagingWeightProfile.update({ where: { id }, data: { active: !active } });
+/** Hard-deletes a single supplier link (assortment row is a leaf record). */
+export async function deleteSupplierLink(id: string): Promise<void> {
+  await prisma.packagingWeightProfile.delete({ where: { id } });
   revalidatePath("/products");
-  revalidatePath("/weight-profiles");
 }
 
 // --- existing central-product management actions (aliases, variants) ---
-
-export async function toggleProductActive(id: string, active: boolean): Promise<void> {
-  await prisma.product.update({ where: { id }, data: { active: !active } });
-  revalidatePath("/products");
-}
 
 export async function addProductAlias(productId: string, formData: FormData): Promise<void> {
   const alias = String(formData.get("alias") ?? "").trim();
@@ -367,7 +358,23 @@ export async function removeProductAlias(id: string): Promise<void> {
   revalidatePath("/products");
 }
 
-export async function toggleVariantActive(id: string, active: boolean): Promise<void> {
-  await prisma.productVariant.update({ where: { id }, data: { active: !active } });
+/**
+ * Hard-deletes a central product variant. Blocked (with a clear message) when
+ * the variant is still used by assortment rows or by parsed offer lines, so
+ * referential integrity is preserved.
+ */
+export async function deleteVariant(id: string): Promise<void> {
+  const [assortment, offerLines] = await Promise.all([
+    prisma.packagingWeightProfile.count({ where: { productVariantId: id } }),
+    prisma.farmOfferLine.count({ where: { productVariantId: id } }),
+  ]);
+  const blocked = blockedDeleteMessage("Dit product", [
+    { count: assortment, label: "assortimentregel(s)" },
+    { count: offerLines, label: "aanbiedingsregel(s)" },
+  ]);
+  if (blocked) redirect(`/products?err=${encodeURIComponent(blocked)}`);
+
+  await prisma.productVariant.delete({ where: { id } });
   revalidatePath("/products");
+  redirect("/products?msg=variant-deleted");
 }

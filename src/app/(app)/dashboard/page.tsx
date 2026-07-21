@@ -23,10 +23,10 @@ export default async function DashboardPage() {
         include: { farmOffer: { include: { farm: true } } },
       }),
       prisma.route.findMany({
-        where: { active: true, freightRates: { none: { active: true } } },
+        where: { freightRates: { none: {} } },
         include: { origin: true, destination: true },
       }),
-      prisma.exchangeRate.findMany({ where: { active: true }, orderBy: { effectiveFrom: "desc" } }),
+      prisma.exchangeRate.findMany({ orderBy: { effectiveFrom: "desc" } }),
     ]);
 
   const missingWeightCount = await prisma.farmOfferLine.count({

@@ -2,13 +2,14 @@ import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
 import { variantLabel } from "@/lib/variantLabel";
 import AssortmentTable, { type AssortmentRow } from "./AssortmentTable";
+import ConfirmButton from "@/components/ConfirmButton";
 import {
   createCentralProduct,
   bulkAddAssortment,
   addSupplierLink,
   addProductAlias,
   removeProductAlias,
-  toggleVariantActive,
+  deleteVariant,
 } from "./actions";
 
 export const dynamic = "force-dynamic";
@@ -20,9 +21,9 @@ interface Filters {
   length?: string;
   box?: string;
   weight?: string;
-  status?: string;
   q?: string;
   msg?: string;
+  err?: string;
   created?: string;
   dup?: string;
   invalid?: string;
@@ -34,10 +35,9 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
       include: { farm: true, productVariant: { include: { product: true } } },
       orderBy: [{ createdAt: "asc" }],
     }),
-    prisma.farm.findMany({ where: { active: true }, orderBy: { name: "asc" } }),
+    prisma.farm.findMany({ orderBy: { name: "asc" } }),
     prisma.productVariant.findMany({
-      where: { active: true },
-      include: { product: true, weightProfiles: { where: { active: true } } },
+      include: { product: true, weightProfiles: true },
       orderBy: { createdAt: "asc" },
     }),
     prisma.product.findMany({
@@ -46,14 +46,11 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
     }),
   ]);
 
-  const status = searchParams.status ?? "active";
   const contains = (haystack: string | null | undefined, needle: string) =>
     (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
 
   const rows = profiles.filter((p) => {
     const v = p.productVariant;
-    if (status === "active" && !p.active) return false;
-    if (status === "inactive" && p.active) return false;
     if (searchParams.farmId && p.farmId !== searchParams.farmId) return false;
     if (searchParams.product && v.product.name !== searchParams.product) return false;
     if (searchParams.variety && !contains(v.variety, searchParams.variety)) return false;
@@ -90,7 +87,6 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
   // / Date instances cross the server->client boundary).
   const tableRows: AssortmentRow[] = rows.map((p) => ({
     id: p.id,
-    active: p.active,
     farmId: p.farmId,
     farmName: p.farm.name,
     supplierCode: p.supplierCode,
@@ -129,6 +125,12 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           {Number(searchParams.dup) > 0 && `, ${searchParams.dup} al aanwezig (overgeslagen)`}
           {Number(searchParams.invalid) > 0 && `, ${searchParams.invalid} regel(s) ongeldig (overgeslagen)`}.
         </div>
+      )}
+      {searchParams.msg === "variant-deleted" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">Product verwijderd.</div>
+      )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
       )}
 
       <form className="card p-4 flex flex-wrap gap-3 items-end">
@@ -182,14 +184,6 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
                 {fmtMoney(w, 3)} kg
               </option>
             ))}
-          </select>
-        </div>
-        <div>
-          <label className="label">Status</label>
-          <select name="status" defaultValue={status} className="input py-1 w-28">
-            <option value="active">Actief</option>
-            <option value="inactive">Inactief</option>
-            <option value="all">Alle</option>
           </select>
         </div>
         <div className="flex-1 min-w-40">
@@ -397,11 +391,16 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
               </div>
               <ul className="mt-2 text-xs text-gray-500 space-y-0.5">
                 {product.variants.map((v) => (
-                  <li key={v.id} className={v.active ? "" : "line-through opacity-60"}>
+                  <li key={v.id}>
                     {variantLabel(v, product.name)}
                     {v.treatment && v.treatment !== "normal" ? ` (${v.treatment})` : ""}
-                    <form action={toggleVariantActive.bind(null, v.id, v.active)} className="inline ml-2">
-                      <button className="text-gray-400 hover:underline">{v.active ? "deactiveren" : "activeren"}</button>
+                    <form action={deleteVariant.bind(null, v.id)} className="inline ml-2">
+                      <ConfirmButton
+                        message={`Weet je zeker dat je "${variantLabel(v, product.name)}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`}
+                        className="text-red-600 hover:underline"
+                      >
+                        verwijderen
+                      </ConfirmButton>
                     </form>
                   </li>
                 ))}

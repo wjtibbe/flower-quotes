@@ -64,8 +64,6 @@ export interface BulkEditInput {
   supplierCode: string;
   notesEnabled: boolean;
   notes: string;
-  statusEnabled: boolean;
-  active: boolean;
 }
 
 export interface BulkProfileUpdate {
@@ -74,7 +72,6 @@ export interface BulkProfileUpdate {
   stemsPerBox?: number;
   supplierCode?: string | null;
   notes?: string | null;
-  active?: boolean;
 }
 
 export interface BulkVariantUpdate {
@@ -94,7 +91,6 @@ export function buildProfileUpdate(input: BulkEditInput): BulkProfileUpdate {
   if (input.stemsEnabled) data.stemsPerBox = parseInt(input.stemsPerBox, 10);
   if (input.codeEnabled) data.supplierCode = emptyToNull(input.supplierCode);
   if (input.notesEnabled) data.notes = emptyToNull(input.notes);
-  if (input.statusEnabled) data.active = input.active;
   return data;
 }
 
@@ -113,8 +109,7 @@ export function hasAnyEdit(input: BulkEditInput): boolean {
     input.weightEnabled ||
     input.stemsEnabled ||
     input.codeEnabled ||
-    input.notesEnabled ||
-    input.statusEnabled
+    input.notesEnabled
   );
 }
 
@@ -127,7 +122,6 @@ export function editSummary(input: BulkEditInput): { label: string; value: strin
   if (input.stemsEnabled) out.push({ label: "Stelen per doos", value: input.stemsPerBox.trim() || "(leeg)" });
   if (input.codeEnabled) out.push({ label: "Leverancierscode", value: input.supplierCode.trim() || "(leeg)" });
   if (input.notesEnabled) out.push({ label: "Aantekeningen", value: input.notes.trim() || "(leeg)" });
-  if (input.statusEnabled) out.push({ label: "Status", value: input.active ? "Actief" : "Inactief" });
   return out;
 }
 
