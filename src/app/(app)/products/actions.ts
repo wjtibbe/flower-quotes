@@ -3,10 +3,136 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
+import {
+  buildProfileUpdate,
+  buildVariantUpdate,
+  hasAnyEdit,
+  validateBulkEdit,
+  type BulkEditInput,
+} from "@/lib/bulkSelection";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
   return s === "" ? null : s;
+}
+
+/** Result of a bulk action, surfaced by the client as a success/error toast. */
+export interface BulkActionResult {
+  ok: boolean;
+  message: string;
+}
+
+// Guard against an accidental "select everything" hitting the database with a
+// single unbounded write; also a natural double-submit / abuse ceiling.
+const MAX_BULK = 1000;
+
+/**
+ * Validates a list of selected supplier-link ids: non-empty, within the cap,
+ * de-duplicated, and every id must still exist. Returns the clean id list or
+ * an error message, so a bulk action never does a partial write on a stale
+ * selection.
+ */
+async function validateBulkIds(ids: string[]): Promise<{ ids: string[] } | { error: string }> {
+  const unique = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))];
+  if (unique.length === 0) return { error: "Geen artikelen geselecteerd." };
+  if (unique.length > MAX_BULK) return { error: `Maximaal ${MAX_BULK} artikelen per bulkactie.` };
+
+  const found = await prisma.packagingWeightProfile.findMany({
+    where: { id: { in: unique } },
+    select: { id: true },
+  });
+  if (found.length !== unique.length) {
+    return { error: "Sommige geselecteerde artikelen bestaan niet meer. Ververs de pagina en probeer opnieuw." };
+  }
+  return { ids: unique };
+}
+
+/**
+ * Bulk-updates the selected supplier links. Only the fields the user enabled
+ * are written (see buildProfileUpdate/buildVariantUpdate); every other value
+ * on every article is left untouched. Length lives on the shared central
+ * ProductVariant, so it is applied to the distinct variants of the selection.
+ * All writes run in one transaction - no partial update on error.
+ */
+export async function bulkUpdateSupplierLinks(ids: string[], edit: BulkEditInput): Promise<BulkActionResult> {
+  const validation = await validateBulkIds(ids);
+  if ("error" in validation) return { ok: false, message: validation.error };
+
+  if (!hasAnyEdit(edit)) return { ok: false, message: "Kies minstens één veld om te wijzigen." };
+  const validationError = validateBulkEdit(edit);
+  if (validationError) return { ok: false, message: validationError };
+
+  const profileData = buildProfileUpdate(edit);
+  const variantData = buildVariantUpdate(edit);
+
+  const ops = [];
+  if (Object.keys(profileData).length > 0) {
+    ops.push(prisma.packagingWeightProfile.updateMany({ where: { id: { in: validation.ids } }, data: profileData }));
+  }
+  if (Object.keys(variantData).length > 0) {
+    const profiles = await prisma.packagingWeightProfile.findMany({
+      where: { id: { in: validation.ids } },
+      select: { productVariantId: true },
+    });
+    const variantIds = [...new Set(profiles.map((p) => p.productVariantId))];
+    ops.push(prisma.productVariant.updateMany({ where: { id: { in: variantIds } }, data: variantData }));
+  }
+
+  if (ops.length === 0) return { ok: false, message: "Kies minstens één veld om te wijzigen." };
+
+  await prisma.$transaction(ops);
+  revalidatePath("/products");
+  revalidatePath("/weight-profiles");
+  return { ok: true, message: `${validation.ids.length} artikel(en) bijgewerkt.` };
+}
+
+/**
+ * Bulk-duplicates the selected supplier links: one fresh record per article,
+ * copying box/weight/stems/code/notes/variant but never the id or timestamps.
+ * Created in one transaction.
+ */
+export async function bulkDuplicateSupplierLinks(ids: string[]): Promise<BulkActionResult> {
+  const validation = await validateBulkIds(ids);
+  if ("error" in validation) return { ok: false, message: validation.error };
+
+  const sources = await prisma.packagingWeightProfile.findMany({ where: { id: { in: validation.ids } } });
+  await prisma.$transaction(
+    sources.map((s) =>
+      prisma.packagingWeightProfile.create({
+        data: {
+          farmId: s.farmId,
+          productVariantId: s.productVariantId,
+          supplierCode: s.supplierCode,
+          boxType: s.boxType,
+          stemsPerBox: s.stemsPerBox,
+          weightPerBoxKg: s.weightPerBoxKg,
+          notes: s.notes,
+          active: s.active,
+        },
+      }),
+    ),
+  );
+  revalidatePath("/products");
+  revalidatePath("/weight-profiles");
+  return { ok: true, message: `${sources.length} artikel(en) succesvol gedupliceerd.` };
+}
+
+/**
+ * Bulk-deactivates the selected supplier links (soft delete - the same
+ * "Deactiveren" behaviour as the per-row action; records are kept and can be
+ * reactivated). Single updateMany, no per-item request.
+ */
+export async function bulkDeactivateSupplierLinks(ids: string[]): Promise<BulkActionResult> {
+  const validation = await validateBulkIds(ids);
+  if ("error" in validation) return { ok: false, message: validation.error };
+
+  const res = await prisma.packagingWeightProfile.updateMany({
+    where: { id: { in: validation.ids } },
+    data: { active: false },
+  });
+  revalidatePath("/products");
+  revalidatePath("/weight-profiles");
+  return { ok: true, message: `${res.count} artikel(en) gedeactiveerd.` };
 }
 
 /**

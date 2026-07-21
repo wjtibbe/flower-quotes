@@ -1,13 +1,11 @@
 import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
 import { variantLabel } from "@/lib/variantLabel";
+import AssortmentTable, { type AssortmentRow } from "./AssortmentTable";
 import {
   createCentralProduct,
   bulkAddAssortment,
   addSupplierLink,
-  updateSupplierLink,
-  duplicateSupplierLink,
-  toggleSupplierLinkActive,
   addProductAlias,
   removeProductAlias,
   toggleVariantActive,
@@ -87,6 +85,26 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
     (a, b) => Number(a) - Number(b),
   );
   const unlinkedVariants = variants.filter((v) => v.weightProfiles.length === 0);
+
+  // Serialize the filtered rows to plain data for the client table (no Decimal
+  // / Date instances cross the server->client boundary).
+  const tableRows: AssortmentRow[] = rows.map((p) => ({
+    id: p.id,
+    active: p.active,
+    farmId: p.farmId,
+    farmName: p.farm.name,
+    supplierCode: p.supplierCode,
+    productName: p.productVariant.product.name,
+    color: p.productVariant.color,
+    grade: p.productVariant.grade,
+    variety: p.productVariant.variety,
+    stemLength: p.productVariant.stemLength,
+    boxType: p.boxType,
+    stemsPerBox: p.stemsPerBox,
+    weightPerBoxKg: p.weightPerBoxKg.toString(),
+    notes: p.notes,
+  }));
+  const farmOptions = farms.map((f) => ({ id: f.id, name: f.name }));
 
   return (
     <div className="space-y-6">
@@ -181,132 +199,7 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
         <button className="btn-secondary">Filteren</button>
       </form>
 
-      <div className="card overflow-x-auto">
-        <table className="table-base">
-          <thead>
-            <tr>
-              <th>Leverancier</th>
-              <th>Product</th>
-              <th>Variety</th>
-              <th>Lengte</th>
-              <th>Box/verpakking</th>
-              <th>Doosgewicht</th>
-              <th>Aantekeningen</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((p) => {
-              const v = p.productVariant;
-              return (
-                <tr key={p.id} className={p.active ? "" : "opacity-50"}>
-                  <td className="font-medium">
-                    {p.farm.name}
-                    {p.supplierCode && <span className="ml-1 text-xs text-gray-400">({p.supplierCode})</span>}
-                  </td>
-                  <td>
-                    {v.product.name}
-                    {(v.color || v.grade) && (
-                      <span className="text-xs text-gray-400"> {[v.color, v.grade].filter(Boolean).join(" ")}</span>
-                    )}
-                  </td>
-                  <td>{v.variety ?? "-"}</td>
-                  <td>{v.stemLength ?? "-"}</td>
-                  <td>
-                    {p.boxType} <span className="text-xs text-gray-400">({p.stemsPerBox} st)</span>
-                  </td>
-                  <td>{fmtMoney(p.weightPerBoxKg, 3)} kg</td>
-                  <td className="max-w-48 truncate" title={p.notes ?? ""}>
-                    {p.notes ?? "-"}
-                  </td>
-                  <td className="whitespace-nowrap">
-                    <details className="inline-block mr-3">
-                      <summary className="text-xs text-brand-600 cursor-pointer inline">Bewerken</summary>
-                      <form
-                        action={updateSupplierLink.bind(null, p.id)}
-                        className="mt-2 flex flex-wrap gap-2 items-end bg-gray-50 p-2 rounded"
-                      >
-                        <div>
-                          <label className="label">Leverancier</label>
-                          <select name="farmId" defaultValue={p.farmId} className="input py-1 text-xs">
-                            {farms.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {f.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="label">Code</label>
-                          <input name="supplierCode" defaultValue={p.supplierCode ?? ""} className="input py-1 text-xs w-24" />
-                        </div>
-                        <div>
-                          <label className="label">Box</label>
-                          <input name="boxType" defaultValue={p.boxType} className="input py-1 text-xs w-16" />
-                        </div>
-                        <div>
-                          <label className="label">Stelen/doos</label>
-                          <input name="stemsPerBox" type="number" required defaultValue={p.stemsPerBox} className="input py-1 text-xs w-20" />
-                        </div>
-                        <div>
-                          <label className="label">Gewicht (kg)</label>
-                          <input
-                            name="weightPerBoxKg"
-                            type="number"
-                            step="0.001"
-                            required
-                            defaultValue={p.weightPerBoxKg.toString()}
-                            className="input py-1 text-xs w-24"
-                          />
-                        </div>
-                        <div>
-                          <label className="label">Aantekeningen</label>
-                          <input name="notes" defaultValue={p.notes ?? ""} className="input py-1 text-xs w-40" />
-                        </div>
-                        <button className="btn-primary py-1 px-2 text-xs">Opslaan</button>
-                      </form>
-                    </details>
-                    <details className="inline-block mr-3">
-                      <summary className="text-xs text-brand-600 cursor-pointer inline">Dupliceren</summary>
-                      <form
-                        action={duplicateSupplierLink.bind(null, p.id)}
-                        className="mt-2 flex gap-2 items-end bg-gray-50 p-2 rounded"
-                      >
-                        <div>
-                          <label className="label">Naar leverancier</label>
-                          <select name="farmId" className="input py-1 text-xs" defaultValue="">
-                            <option value="" disabled>
-                              Kies leverancier...
-                            </option>
-                            {farms.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {f.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <button className="btn-secondary py-1 px-2 text-xs">Kopie maken</button>
-                      </form>
-                    </details>
-                    <form action={toggleSupplierLinkActive.bind(null, p.id, p.active)} className="inline">
-                      <button className="text-xs text-gray-500 hover:underline">
-                        {p.active ? "Deactiveren" : "Activeren"}
-                      </button>
-                    </form>
-                  </td>
-                </tr>
-              );
-            })}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={8} className="text-center text-gray-400 py-6">
-                  Geen leverancierskoppelingen gevonden met deze filters.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
+      <AssortmentTable rows={tableRows} farms={farmOptions} />
 
       <div className="card p-6">
         <h2 className="font-semibold text-gray-800 mb-1">Meerdere regels tegelijk toevoegen (plakken)</h2>
