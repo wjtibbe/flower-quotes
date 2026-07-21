@@ -52,16 +52,18 @@ export async function createCentralProduct(formData: FormData): Promise<void> {
 /**
  * Bulk-creates supplier-assortment rows from a pasted list, one row per
  * line: "Omschrijving<TAB or ,>Stelen per doos" optionally followed by
- * doostype, doosgewicht, leverancierscode en notities to override the shared
- * defaults set above the textarea. The central product is shared across all
- * lines (reused if it already exists, by name); each line's description
- * becomes the variant's "variety" text as-is (no attempt to split it into
- * color/grade/length - the source price lists this is meant for already
- * combine those into one descriptive name).
+ * doostype, doosgewicht, leverancierscode, notities en lengte to override the
+ * shared defaults set above the textarea. The central product is shared
+ * across all lines (reused if it already exists, by name); each line's
+ * description becomes the variant's "variety" text as-is (no attempt to
+ * split it into color/grade - the source price lists this is meant for
+ * already combine those into one descriptive name). Lengte is stored on its
+ * own field (ProductVariant.stemLength), not folded into the description.
  *
- * Safe to re-run on the same paste: an existing variant is reused rather
- * than duplicated, and a line whose (leverancier, variant, doostype,
- * stelen/doos) combination already exists is skipped instead of duplicated.
+ * Safe to re-run on the same paste: an existing variant (same omschrijving +
+ * lengte) is reused rather than duplicated, and a line whose (leverancier,
+ * variant, doostype, stelen/doos) combination already exists is skipped
+ * instead of duplicated.
  */
 export async function bulkAddAssortment(formData: FormData): Promise<void> {
   const farmId = norm(formData.get("farmId"));
@@ -69,6 +71,7 @@ export async function bulkAddAssortment(formData: FormData): Promise<void> {
   const productGroup = norm(formData.get("productGroup")) ?? productName;
   const defaultBoxType = norm(formData.get("boxType")) ?? "QB";
   const defaultWeightPerBoxKg = norm(formData.get("weightPerBoxKg"));
+  const defaultStemLength = norm(formData.get("stemLength"));
   const rowsRaw = String(formData.get("rows") ?? "");
 
   if (!farmId || !productName) throw new Error("Leverancier en product zijn verplicht");
@@ -97,6 +100,7 @@ export async function bulkAddAssortment(formData: FormData): Promise<void> {
     const weightPerBoxKg = cols[3] || defaultWeightPerBoxKg;
     const supplierCode = cols[4] || null;
     const notes = cols[5] || null;
+    const stemLength = cols[6] || defaultStemLength;
 
     if (!variety || !Number.isFinite(stemsPerBox) || stemsPerBox <= 0 || !weightPerBoxKg) {
       invalid++;
@@ -107,14 +111,14 @@ export async function bulkAddAssortment(formData: FormData): Promise<void> {
       where: {
         productId: product.id,
         variety: { equals: variety, mode: "insensitive" },
-        stemLength: null,
+        stemLength: stemLength ? { equals: stemLength, mode: "insensitive" } : null,
         color: null,
         grade: null,
         treatment: null,
       },
     });
     if (!variant) {
-      variant = await prisma.productVariant.create({ data: { productId: product.id, variety } });
+      variant = await prisma.productVariant.create({ data: { productId: product.id, variety, stemLength } });
     }
 
     const existingLink = await prisma.packagingWeightProfile.findFirst({

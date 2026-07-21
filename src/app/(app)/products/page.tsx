@@ -312,12 +312,12 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
         <h2 className="font-semibold text-gray-800 mb-1">Meerdere regels tegelijk toevoegen (plakken)</h2>
         <p className="text-sm text-gray-500 mb-4">
           Handig bij een prijslijst van een leverancier met veel variëteiten (bv. een hydrangea-assortiment). Kies
-          hieronder eenmalig het centrale product en de leverancier, en plak daarna één regel per variëteit:{" "}
-          <code className="text-xs bg-gray-100 px-1 rounded">Omschrijving</code> gevolgd door{" "}
+          hieronder eenmalig het centrale product, de leverancier en de lengte, en plak daarna één regel per
+          variëteit: <code className="text-xs bg-gray-100 px-1 rounded">Omschrijving</code> gevolgd door{" "}
           <code className="text-xs bg-gray-100 px-1 rounded">stelen per doos</code> (gescheiden door een Tab of komma
-          - zoals bij plakken vanuit Excel). Optioneel kun je per regel ook nog doostype, doosgewicht en
-          leverancierscode toevoegen om de standaardwaarden hieronder te overschrijven. Opnieuw plakken van dezelfde
-          lijst maakt geen duplicaten aan.
+          - zoals bij plakken vanuit Excel). Optioneel kun je per regel ook nog doostype, doosgewicht,
+          leverancierscode en lengte toevoegen om de standaardwaarden hieronder te overschrijven. Opnieuw plakken van
+          dezelfde lijst maakt geen duplicaten aan.
         </p>
         <form action={bulkAddAssortment} className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -347,7 +347,7 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
                 ))}
               </select>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               <div>
                 <label className="label">Doostype (standaard)</label>
                 <input className="input" name="boxType" defaultValue="QB" />
@@ -355,6 +355,10 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
               <div>
                 <label className="label">Doosgewicht kg (standaard) *</label>
                 <input className="input" type="number" step="0.001" name="weightPerBoxKg" required />
+              </div>
+              <div>
+                <label className="label">Lengte (standaard)</label>
+                <input className="input" name="stemLength" placeholder="bv. 70cm" />
               </div>
             </div>
           </div>
