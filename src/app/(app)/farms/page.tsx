@@ -1,10 +1,14 @@
 import { prisma } from "@/lib/db";
 import ConfirmButton from "@/components/ConfirmButton";
-import { saveFarm, deleteFarm, addFarmAlias, removeFarmAlias } from "./actions";
+import { saveFarm, bulkAddFarms, deleteFarm, addFarmAlias, removeFarmAlias } from "./actions";
 
 export const dynamic = "force-dynamic";
 
-export default async function FarmsPage({ searchParams }: { searchParams: { edit?: string; msg?: string; err?: string } }) {
+export default async function FarmsPage({
+  searchParams,
+}: {
+  searchParams: { edit?: string; msg?: string; err?: string; created?: string; dup?: string; invalid?: string };
+}) {
   const [farms, origins] = await Promise.all([
     prisma.farm.findMany({ orderBy: { name: "asc" }, include: { aliases: true, origin: true } }),
     prisma.origin.findMany({ orderBy: { city: "asc" } }),
@@ -21,6 +25,13 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
 
       {searchParams.msg === "deleted" && (
         <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">Leverancier verwijderd.</div>
+      )}
+      {searchParams.msg === "bulkfarms" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">
+          {searchParams.created ?? 0} leverancier(s) toegevoegd
+          {Number(searchParams.dup) > 0 && `, ${searchParams.dup} bestond al (overgeslagen)`}
+          {Number(searchParams.invalid) > 0 && `, ${searchParams.invalid} regel(s) ongeldig (overgeslagen)`}.
+        </div>
       )}
       {searchParams.err && (
         <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
@@ -69,6 +80,35 @@ export default async function FarmsPage({ searchParams }: { searchParams: { edit
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="card p-6 max-w-2xl">
+        <h2 className="font-semibold text-gray-800 mb-1">Meerdere leveranciers tegelijk toevoegen (plakken)</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Plak een lijst, één leverancier per regel: <code className="text-xs bg-gray-100 px-1 rounded">Land</code>{" "}
+          gevolgd door <code className="text-xs bg-gray-100 px-1 rounded">Naam</code> (gescheiden door een Tab, zoals
+          uit Excel). Staat er geen land bij een regel, dan wordt het standaardland hieronder gebruikt. Namen die al
+          bestaan worden overgeslagen (opnieuw plakken maakt geen duplicaten).
+        </p>
+        <form action={bulkAddFarms} className="space-y-4">
+          <div className="max-w-xs">
+            <label className="label">Standaardland (als een regel geen land heeft)</label>
+            <input className="input" name="defaultCountry" placeholder="bv. Ecuador" />
+          </div>
+          <div>
+            <label className="label">Regels (Land ⇥ Naam, één per regel)</label>
+            <textarea
+              className="input font-mono text-xs"
+              name="rows"
+              rows={8}
+              required
+              placeholder={"Ecuador\tRosaprima\nEcuador\tAgrocoex\nColombia\tLa Gaitana Farms"}
+            />
+          </div>
+          <button className="btn-primary" type="submit">
+            Leveranciers toevoegen
+          </button>
+        </form>
       </div>
 
       <div className="card p-6 max-w-2xl">
