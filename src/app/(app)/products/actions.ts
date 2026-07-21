@@ -10,6 +10,7 @@ import {
   validateBulkEdit,
   type BulkEditInput,
 } from "@/lib/bulkSelection";
+import { randomUUID } from "node:crypto";
 import { blockedDeleteMessage } from "@/lib/deletionMessage";
 import { MAX_BULK } from "@/lib/bulkIds";
 import type { ActionResult } from "@/lib/actionResult";
@@ -281,7 +282,42 @@ export async function bulkAddAssortmentMultiSupplier(formData: FormData): Promis
     .map((l) => l.trim())
     .filter(Boolean);
 
-  const farms = await prisma.farm.findMany({ select: { id: true, name: true } });
+  // Load every lookup once instead of querying per row: a paste can be many
+  // thousands of lines, and a query-per-row would take far longer than a
+  // request may run (the page would appear to hang). Everything below resolves
+  // in memory and only writes happen, in batched createMany calls.
+  const [farms, products, variants, existingLinks] = await Promise.all([
+    prisma.farm.findMany({ select: { id: true, name: true } }),
+    prisma.product.findMany({ select: { id: true, name: true } }),
+    prisma.productVariant.findMany({
+      select: { id: true, productId: true, variety: true, stemLength: true, color: true, grade: true, treatment: true },
+    }),
+    prisma.packagingWeightProfile.findMany({
+      select: { farmId: true, productVariantId: true, boxType: true, stemsPerBox: true },
+    }),
+  ]);
+
+  const SEP = " ";
+  const productIdByName = new Map<string, string>();
+  for (const p of products) productIdByName.set(p.name.toLowerCase(), p.id);
+
+  const variantKey = (productId: string, variety: string, stemLength: string | null) =>
+    `${productId}${SEP}${variety.toLowerCase()}${SEP}${(stemLength ?? "").toLowerCase()}`;
+  const variantIdByKey = new Map<string, string>();
+  for (const v of variants) {
+    // Only plain assortment variants (no color/grade/treatment) are reuse targets.
+    if (v.color === null && v.grade === null && v.treatment === null) {
+      variantIdByKey.set(variantKey(v.productId, v.variety ?? "", v.stemLength), v.id);
+    }
+  }
+
+  const linkKey = (farmId: string, variantId: string, boxType: string, stems: number) =>
+    `${farmId}${SEP}${variantId}${SEP}${boxType}${SEP}${stems}`;
+  const seenLinks = new Set(existingLinks.map((l) => linkKey(l.farmId, l.productVariantId, l.boxType, l.stemsPerBox)));
+
+  const newProducts: { id: string; name: string; productGroup: string }[] = [];
+  const newVariants: { id: string; productId: string; variety: string; stemLength: string | null }[] = [];
+  const newLinks: { farmId: string; productVariantId: string; boxType: string; stemsPerBox: number; weightPerBoxKg: string }[] = [];
 
   let created = 0;
   let duplicates = 0;
@@ -306,51 +342,54 @@ export async function bulkAddAssortmentMultiSupplier(formData: FormData): Promis
       continue;
     }
 
-    let product = await prisma.product.findFirst({
-      where: { name: { equals: split.productName, mode: "insensitive" } },
-    });
-    if (!product) {
-      product = await prisma.product.create({ data: { name: split.productName, productGroup: split.productName } });
+    let productId = productIdByName.get(split.productName.toLowerCase());
+    if (!productId) {
+      productId = randomUUID();
+      productIdByName.set(split.productName.toLowerCase(), productId);
+      newProducts.push({ id: productId, name: split.productName, productGroup: split.productName });
     }
 
-    let variant = await prisma.productVariant.findFirst({
-      where: {
-        productId: product.id,
-        variety: { equals: split.variety, mode: "insensitive" },
-        stemLength: row.stemLength ? { equals: row.stemLength, mode: "insensitive" } : null,
-        color: null,
-        grade: null,
-        treatment: null,
-      },
-    });
-    if (!variant) {
-      variant = await prisma.productVariant.create({
-        data: { productId: product.id, variety: split.variety, stemLength: row.stemLength },
-      });
+    const vKey = variantKey(productId, split.variety, row.stemLength);
+    let variantId = variantIdByKey.get(vKey);
+    if (!variantId) {
+      variantId = randomUUID();
+      variantIdByKey.set(vKey, variantId);
+      newVariants.push({ id: variantId, productId, variety: split.variety, stemLength: row.stemLength });
     }
 
-    const existingLink = await prisma.packagingWeightProfile.findFirst({
-      where: { farmId: farm.id, productVariantId: variant.id, boxType: row.boxType, stemsPerBox: row.stemsPerBox },
-    });
-    if (existingLink) {
+    const lKey = linkKey(farm.id, variantId, row.boxType, row.stemsPerBox);
+    if (seenLinks.has(lKey)) {
       duplicates++;
       continue;
     }
-
-    await prisma.packagingWeightProfile.create({
-      data: {
-        farmId: farm.id,
-        productVariantId: variant.id,
-        boxType: row.boxType,
-        stemsPerBox: row.stemsPerBox,
-        weightPerBoxKg: row.weightPerBoxKg,
-      },
+    seenLinks.add(lKey);
+    newLinks.push({
+      farmId: farm.id,
+      productVariantId: variantId,
+      boxType: row.boxType,
+      stemsPerBox: row.stemsPerBox,
+      weightPerBoxKg: row.weightPerBoxKg,
     });
     created++;
   }
 
+  // Write in dependency order (products -> variants -> links), batched so no
+  // single statement grows unbounded. skipDuplicates guards against a racing
+  // concurrent import.
+  const chunk = <T,>(arr: T[], size: number): T[][] => {
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  };
+  for (const batch of chunk(newProducts, 500)) await prisma.product.createMany({ data: batch, skipDuplicates: true });
+  for (const batch of chunk(newVariants, 500)) await prisma.productVariant.createMany({ data: batch, skipDuplicates: true });
+  for (const batch of chunk(newLinks, 1000)) await prisma.packagingWeightProfile.createMany({ data: batch, skipDuplicates: true });
+
   revalidatePath("/products");
-  const unmatchedParam = unmatched.size > 0 ? `&unmatched=${encodeURIComponent([...unmatched].join(", "))}` : "";
+  // Keep the redirect URL bounded even when many distinct suppliers are unknown.
+  const unmatchedList = [...unmatched];
+  const unmatchedShown = unmatchedList.slice(0, 20).join(", ") + (unmatchedList.length > 20 ? ` en nog ${unmatchedList.length - 20}` : "");
+  const unmatchedParam = unmatched.size > 0 ? `&unmatched=${encodeURIComponent(unmatchedShown)}` : "";
   redirect(`/products?msg=multibulk&created=${created}&dup=${duplicates}&invalid=${invalid}${unmatchedParam}`);
 }
 

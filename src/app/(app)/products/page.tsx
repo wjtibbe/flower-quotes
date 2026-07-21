@@ -39,7 +39,10 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
     }),
     prisma.farm.findMany({ orderBy: { name: "asc" } }),
     prisma.productVariant.findMany({
-      include: { product: true, weightProfiles: true },
+      // _count instead of loading every link row again (the full weightProfiles
+      // are only needed to know which variants are unlinked); much lighter with
+      // a large assortment.
+      include: { product: true, _count: { select: { weightProfiles: true } } },
       orderBy: { createdAt: "asc" },
     }),
     prisma.product.findMany({
@@ -83,11 +86,19 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
   const weightOptions = [...new Set(profiles.map((p) => p.weightPerBoxKg.toString()))].sort(
     (a, b) => Number(a) - Number(b),
   );
-  const unlinkedVariants = variants.filter((v) => v.weightProfiles.length === 0);
+  const unlinkedVariants = variants.filter((v) => v._count.weightProfiles === 0);
+
+  // Cap how many rows the interactive client table renders. With a large
+  // assortment (many thousands of supplier links) rendering every row as a
+  // checkbox row makes the page unresponsive; the filters above narrow the set,
+  // and this keeps the page snappy meanwhile.
+  const RENDER_LIMIT = 500;
+  const totalRows = rows.length;
+  const cappedRows = rows.slice(0, RENDER_LIMIT);
 
   // Serialize the filtered rows to plain data for the client table (no Decimal
   // / Date instances cross the server->client boundary).
-  const tableRows: AssortmentRow[] = rows.map((p) => ({
+  const tableRows: AssortmentRow[] = cappedRows.map((p) => ({
     id: p.id,
     farmId: p.farmId,
     farmName: p.farm.name,
@@ -208,6 +219,12 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
         <button className="btn-secondary">Filteren</button>
       </form>
 
+      {totalRows > RENDER_LIMIT && (
+        <div className="card p-3 bg-amber-50 border-amber-200 text-sm text-amber-800">
+          {totalRows} regels gevonden; de eerste {RENDER_LIMIT} worden getoond. Gebruik de filters hierboven om te
+          verfijnen.
+        </div>
+      )}
       <AssortmentTable rows={tableRows} farms={farmOptions} />
 
       <div className="card p-6">
