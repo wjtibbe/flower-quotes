@@ -45,18 +45,25 @@ export function parseAssortmentPasteRow(line: string): AssortmentPasteRow | null
   };
 }
 
+// Second words that belong to the central product name rather than the variety,
+// so "Dianthus St", "Dianthus Sp", "Dianthus Spray", "Dianthus Solomio" and
+// "Rosa Ec" (Rosa Ecuador) each stay their own central product - matching how
+// the supplier lists label their genus + type/origin.
+const PRODUCT_QUALIFIERS = new Set(["st", "sp", "spray", "solomio", "ec"]);
+
 /**
- * Splits an "Inkoop Artikel" into a central product name and a variety.
- * "Dianthus St/Sp/Solomio/Spray X" -> product "Dianthus <type>", variety "X",
- * so Dianthus St and Dianthus Sp are separate central products (per the user's
- * choice). Anything else -> first word is the product, the rest the variety
- * (e.g. "Inirida Summer" -> "Inirida" / "Summer"). Returns null when there is
+ * Splits an "Inkoop Artikel" into a central product name and a variety. When the
+ * second word is a known qualifier (see PRODUCT_QUALIFIERS) the product is the
+ * first two words and the variety is the rest ("Rosa Ec Absolut in Pink" ->
+ * "Rosa Ec" / "Absolut in Pink"; "Dianthus St Bridal Damascus" -> "Dianthus St"
+ * / "Bridal Damascus"). Otherwise the first word is the product and the rest the
+ * variety ("Inirida Summer" -> "Inirida" / "Summer"). Returns null when there is
  * no variety left (a bare product name).
  */
 export function splitArticle(article: string): { productName: string; variety: string } | null {
   const tokens = article.trim().split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return null;
-  if (tokens[0].toLowerCase() === "dianthus" && tokens.length >= 3) {
+  if (tokens.length >= 3 && PRODUCT_QUALIFIERS.has(tokens[1].toLowerCase())) {
     return { productName: `${tokens[0]} ${tokens[1]}`, variety: tokens.slice(2).join(" ") };
   }
   return { productName: tokens[0], variety: tokens.slice(1).join(" ") };

@@ -66,6 +66,13 @@ describe("splitArticle", () => {
       variety: "Bridal Damascus",
     });
   });
+  it("keeps Rosa Ec as its own product", () => {
+    expect(splitArticle("Rosa Ec Absolut in Pink")).toEqual({ productName: "Rosa Ec", variety: "Absolut in Pink" });
+    expect(splitArticle("Rosa Ec Freedom")).toEqual({ productName: "Rosa Ec", variety: "Freedom" });
+  });
+  it("keeps the qualifier match case-insensitive", () => {
+    expect(splitArticle("Rosa ec swan")).toEqual({ productName: "Rosa ec", variety: "swan" });
+  });
   it("splits a non-Dianthus genus on the first word", () => {
     expect(splitArticle("Inirida Summer")).toEqual({ productName: "Inirida", variety: "Summer" });
   });

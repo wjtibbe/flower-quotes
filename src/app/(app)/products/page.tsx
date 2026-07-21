@@ -295,8 +295,9 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           <code className="text-xs bg-gray-100 px-1 rounded">KG per doos</code>. De leverancier wordt gezocht bij een
           bestaande leverancier (kleine naamsverschillen zoals &quot;S.A.S.&quot; worden genegeerd); onbekende
           leveranciers worden overgeslagen en gemeld. Het artikel wordt gesplitst in centraal product + variety
-          (&quot;Dianthus St Bridal Damascus&quot; → product <em>Dianthus St</em>, variety <em>Bridal Damascus</em>).
-          Een kopregel en het opnieuw plakken van dezelfde lijst maken geen duplicaten aan.
+          (&quot;Dianthus St Bridal Damascus&quot; → product <em>Dianthus St</em>, variety <em>Bridal Damascus</em>;
+          &quot;Rosa Ec Absolut in Pink&quot; → product <em>Rosa Ec</em>, variety <em>Absolut in Pink</em>). Een
+          kopregel en het opnieuw plakken van dezelfde lijst maken geen duplicaten aan.
         </p>
         <form action={bulkAddAssortmentMultiSupplier} className="space-y-4">
           <div>
