@@ -6,6 +6,7 @@ import ConfirmButton from "@/components/ConfirmButton";
 import {
   createCentralProduct,
   bulkAddAssortment,
+  bulkAddAssortmentMultiSupplier,
   addSupplierLink,
   addProductAlias,
   removeProductAlias,
@@ -27,6 +28,7 @@ interface Filters {
   created?: string;
   dup?: string;
   invalid?: string;
+  unmatched?: string;
 }
 
 export default async function AssortmentPage({ searchParams }: { searchParams: Filters }) {
@@ -124,6 +126,19 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           {searchParams.created ?? 0} regel(s) toegevoegd
           {Number(searchParams.dup) > 0 && `, ${searchParams.dup} al aanwezig (overgeslagen)`}
           {Number(searchParams.invalid) > 0 && `, ${searchParams.invalid} regel(s) ongeldig (overgeslagen)`}.
+        </div>
+      )}
+      {searchParams.msg === "multibulk" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">
+          {searchParams.created ?? 0} regel(s) toegevoegd
+          {Number(searchParams.dup) > 0 && `, ${searchParams.dup} al aanwezig (overgeslagen)`}
+          {Number(searchParams.invalid) > 0 && `, ${searchParams.invalid} regel(s) ongeldig (overgeslagen)`}.
+          {searchParams.unmatched && (
+            <span className="block mt-1 text-amber-700">
+              Niet-herkende leverancier(s), regels overgeslagen: {searchParams.unmatched}. Controleer of deze
+              leveranciers bestaan (of de naam overeenkomt) en plak opnieuw.
+            </span>
+          )}
         </div>
       )}
       {searchParams.msg === "variant-deleted" && (
@@ -261,6 +276,43 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           </div>
           <button className="btn-primary" type="submit">
             Regels toevoegen
+          </button>
+        </form>
+      </div>
+
+      <div className="card p-6">
+        <h2 className="font-semibold text-gray-800 mb-1">
+          Meerdere leveranciers tegelijk importeren (plakken met leverancier-kolom)
+        </h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Handig voor een complete lijst die meerdere leveranciers omvat - plak in één keer. Plak per regel exact deze
+          zes kolommen (gescheiden door een Tab, zoals uit Excel):{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">Leverancier</code>,{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">Inkoop Artikel</code>,{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">Lengte</code>,{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">Doos</code>,{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">Stelen per doos</code>,{" "}
+          <code className="text-xs bg-gray-100 px-1 rounded">KG per doos</code>. De leverancier wordt gezocht bij een
+          bestaande leverancier (kleine naamsverschillen zoals &quot;S.A.S.&quot; worden genegeerd); onbekende
+          leveranciers worden overgeslagen en gemeld. Het artikel wordt gesplitst in centraal product + variety
+          (&quot;Dianthus St Bridal Damascus&quot; → product <em>Dianthus St</em>, variety <em>Bridal Damascus</em>).
+          Een kopregel en het opnieuw plakken van dezelfde lijst maken geen duplicaten aan.
+        </p>
+        <form action={bulkAddAssortmentMultiSupplier} className="space-y-4">
+          <div>
+            <label className="label">Regels (één per variëteit, mét leverancier-kolom)</label>
+            <textarea
+              className="input font-mono text-xs"
+              name="rows"
+              rows={8}
+              required
+              placeholder={
+                "C.I Flores de Aposentos\tDianthus St Bridal Damascus\t50\tQB\t280\t7.8\nCOLIBRI FLOWERS.S.A\tDianthus Sp Athena\t60\tQB\t260\t7.8"
+              }
+            />
+          </div>
+          <button className="btn-primary" type="submit">
+            Importeren
           </button>
         </form>
       </div>

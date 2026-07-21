@@ -13,6 +13,12 @@ import {
 import { blockedDeleteMessage } from "@/lib/deletionMessage";
 import { MAX_BULK } from "@/lib/bulkIds";
 import type { ActionResult } from "@/lib/actionResult";
+import {
+  isHeaderRow,
+  parseAssortmentPasteRow,
+  splitArticle,
+  matchFarm,
+} from "@/lib/import/assortmentPaste";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -254,6 +260,98 @@ export async function bulkAddAssortment(formData: FormData): Promise<void> {
 
   revalidatePath("/products");
   redirect(`/products?msg=bulk&created=${created}&dup=${duplicates}&invalid=${invalid}`);
+}
+
+/**
+ * Bulk-imports assortment rows from a paste that spans multiple suppliers, one
+ * variety per line:
+ *   Leverancier <TAB> Inkoop Artikel <TAB> Lengte <TAB> Doos <TAB> Stelen/doos <TAB> KG/doos
+ * The supplier is matched to an existing farm by name (tolerant of legal
+ * suffixes/punctuation - never auto-created); the article is split into a
+ * central product + variety (see splitArticle). Products and variants are
+ * reused when they already exist (by name / variety+length), and a line whose
+ * (leverancier, variant, doostype, stelen/doos) combination already exists is
+ * skipped, so re-pasting the same list makes no duplicates. Rows for an
+ * unknown supplier are collected and reported instead of silently dropped.
+ */
+export async function bulkAddAssortmentMultiSupplier(formData: FormData): Promise<void> {
+  const rowsRaw = String(formData.get("rows") ?? "");
+  const lines = rowsRaw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  const farms = await prisma.farm.findMany({ select: { id: true, name: true } });
+
+  let created = 0;
+  let duplicates = 0;
+  let invalid = 0;
+  const unmatched = new Set<string>();
+
+  for (const line of lines) {
+    if (isHeaderRow(line)) continue;
+    const row = parseAssortmentPasteRow(line);
+    if (!row) {
+      invalid++;
+      continue;
+    }
+    const farm = matchFarm(farms, row.supplierName);
+    if (!farm) {
+      unmatched.add(row.supplierName);
+      continue;
+    }
+    const split = splitArticle(row.article);
+    if (!split) {
+      invalid++;
+      continue;
+    }
+
+    let product = await prisma.product.findFirst({
+      where: { name: { equals: split.productName, mode: "insensitive" } },
+    });
+    if (!product) {
+      product = await prisma.product.create({ data: { name: split.productName, productGroup: split.productName } });
+    }
+
+    let variant = await prisma.productVariant.findFirst({
+      where: {
+        productId: product.id,
+        variety: { equals: split.variety, mode: "insensitive" },
+        stemLength: row.stemLength ? { equals: row.stemLength, mode: "insensitive" } : null,
+        color: null,
+        grade: null,
+        treatment: null,
+      },
+    });
+    if (!variant) {
+      variant = await prisma.productVariant.create({
+        data: { productId: product.id, variety: split.variety, stemLength: row.stemLength },
+      });
+    }
+
+    const existingLink = await prisma.packagingWeightProfile.findFirst({
+      where: { farmId: farm.id, productVariantId: variant.id, boxType: row.boxType, stemsPerBox: row.stemsPerBox },
+    });
+    if (existingLink) {
+      duplicates++;
+      continue;
+    }
+
+    await prisma.packagingWeightProfile.create({
+      data: {
+        farmId: farm.id,
+        productVariantId: variant.id,
+        boxType: row.boxType,
+        stemsPerBox: row.stemsPerBox,
+        weightPerBoxKg: row.weightPerBoxKg,
+      },
+    });
+    created++;
+  }
+
+  revalidatePath("/products");
+  const unmatchedParam = unmatched.size > 0 ? `&unmatched=${encodeURIComponent([...unmatched].join(", "))}` : "";
+  redirect(`/products?msg=multibulk&created=${created}&dup=${duplicates}&invalid=${invalid}${unmatchedParam}`);
 }
 
 /** Links a supplier to an existing central product (creates a supplier-assortment row). */
