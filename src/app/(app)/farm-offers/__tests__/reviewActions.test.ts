@@ -84,7 +84,7 @@ function profileRow(overrides: Record<string, unknown> = {}) {
     boxType: "QB",
     stemsPerBox: 100,
     weightPerBoxKg: { toString: () => "8.000" },
-    productVariant: { productId: "product-1", variety: "Dallas", stemLength: "60 cm", product: { name: "Rose" } },
+    productVariant: { productId: "product-1", variety: "Dallas", stemLength: "60 cm", product: { name: "Rosa Ec" } },
     ...overrides,
   };
 }
@@ -154,8 +154,8 @@ describe("updateOfferLine - correction + rematch", () => {
   it("Dallas -> Freedom leads to a new match", async () => {
     mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
     mockPackagingWeightProfileFindMany.mockResolvedValue([
-      profileRow({ id: "profile-dallas", productVariant: { productId: "p1", variety: "Dallas", stemLength: "60 cm", product: { name: "Rose" } } }),
-      profileRow({ id: "profile-freedom", productVariantId: "variant-freedom", productVariant: { productId: "p1", variety: "Freedom", stemLength: "60 cm", product: { name: "Rose" } } }),
+      profileRow({ id: "profile-dallas", productVariant: { productId: "p1", variety: "Dallas", stemLength: "60 cm", product: { name: "Rosa Ec" } } }),
+      profileRow({ id: "profile-freedom", productVariantId: "variant-freedom", productVariant: { productId: "p1", variety: "Freedom", stemLength: "60 cm", product: { name: "Rosa Ec" } } }),
     ]);
 
     const result = await updateOfferLine("line-1", updateFormData({ varietyRaw: "Freedom" }));

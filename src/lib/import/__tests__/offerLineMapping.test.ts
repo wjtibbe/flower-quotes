@@ -176,6 +176,79 @@ describe("mapParsedOfferLineToCreateInput", () => {
     expect(mapped.varietyRaw).toBe("Dallas");
     expect(mapped.varietyRaw).not.toMatch(/60/);
   });
+
+  it("normalizes a generic rose productGroupRaw to the canonical 'Rosa Ec' on the persisted field", () => {
+    const mapped = mapParsedOfferLineToCreateInput(baseLine({ productGroupRaw: "Rose" }));
+    expect(mapped.productGroupRaw).toBe("Rosa Ec");
+  });
+
+  it("preserves the ORIGINAL 'Rose' in extractedSnapshot even though the persisted field is canonicalized", () => {
+    const mapped = mapParsedOfferLineToCreateInput(baseLine({ productGroupRaw: "Rose" }));
+    const snapshot = mapped.extractedSnapshot as Record<string, unknown>;
+    expect(mapped.productGroupRaw).toBe("Rosa Ec");
+    expect(snapshot.productGroupRaw).toBe("Rose");
+  });
+
+  it("leaves an unrelated productGroupRaw unchanged", () => {
+    const mapped = mapParsedOfferLineToCreateInput(baseLine({ productGroupRaw: "Hydrangea" }));
+    expect(mapped.productGroupRaw).toBe("Hydrangea");
+  });
+
+  it("HB becomes QB on the persisted boxType", () => {
+    const mapped = mapParsedOfferLineToCreateInput(baseLine({ boxType: "HB" }));
+    expect(mapped.boxType).toBe("QB");
+  });
+
+  it("lowercase/trimmed hb becomes QB", () => {
+    expect(mapParsedOfferLineToCreateInput(baseLine({ boxType: "hb" })).boxType).toBe("QB");
+    expect(mapParsedOfferLineToCreateInput(baseLine({ boxType: " HB " })).boxType).toBe("QB");
+  });
+
+  it("QB stays QB", () => {
+    const mapped = mapParsedOfferLineToCreateInput(baseLine({ boxType: "QB" }));
+    expect(mapped.boxType).toBe("QB");
+  });
+
+  it("an HB line is retained (never dropped) with quantity/price/product/variety/length unchanged", () => {
+    const mapped = mapParsedOfferLineToCreateInput(
+      baseLine({
+        rawText: "2hb Alert 40cm",
+        boxType: "HB",
+        varietyRaw: "Alert",
+        productGroupRaw: "Rose",
+        lengthCm: 40,
+        quantity: "2",
+        unit: "BOXES",
+        fobPricePerStem: "0.38",
+      }),
+    );
+    expect(mapped.boxType).toBe("QB");
+    expect(mapped.varietyRaw).toBe("Alert");
+    expect(mapped.productGroupRaw).toBe("Rosa Ec");
+    expect(mapped.stemLengthCm).toBe(40);
+    expect(mapped.quantity).toBe("2");
+    expect(mapped.unit).toBe("BOXES");
+    expect(mapped.fobPricePerStem).toBe("0.38");
+  });
+
+  it("preserves the original 'HB' in extractedSnapshot even though the persisted boxType is normalized to QB", () => {
+    const mapped = mapParsedOfferLineToCreateInput(baseLine({ rawText: "2hb Alert 40cm", boxType: "HB" }));
+    const snapshot = mapped.extractedSnapshot as Record<string, unknown>;
+    expect(mapped.boxType).toBe("QB");
+    expect(mapped.rawText).toBe("2hb Alert 40cm");
+    expect(snapshot.boxType).toBe("HB");
+  });
+
+  it("an all-HB import still creates the expected number of lines, all normalized to QB", () => {
+    const lines = [
+      baseLine({ rawText: "2hb Alert 40cm", boxType: "HB" }),
+      baseLine({ rawText: "1hb Freedom 60cm", boxType: "hb" }),
+      baseLine({ rawText: "3hb Dallas 50cm", boxType: " HB " }),
+    ];
+    const mapped = lines.map(mapParsedOfferLineToCreateInput);
+    expect(mapped).toHaveLength(3);
+    expect(mapped.every((m) => m.boxType === "QB")).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------

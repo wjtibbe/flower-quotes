@@ -91,6 +91,38 @@ describe("validateOfferLineForFinalization - warnings", () => {
   });
 });
 
+describe("validateOfferLineForFinalization - resolved unit/quantity via boxesAvailable (stale-warning fix)", () => {
+  it("quantity=2 + unit=BOXES does not report missing quantity/unit", () => {
+    const result = validateOfferLineForFinalization(validLine({ quantity: "2", unit: "BOXES" }));
+    expect(result.errors.some((e) => /eenheid|unit/i.test(e))).toBe(false);
+    expect(result.warnings.some((w) => /hoeveelheid|quantity/i.test(w))).toBe(false);
+  });
+
+  it("a line with null quantity/unit but a real boxesAvailable is NOT reported as missing (matches the review screen's own display fallback)", () => {
+    const result = validateOfferLineForFinalization(
+      validLine({ quantity: null, unit: null, totalStems: null, boxesAvailable: 2 }),
+    );
+    expect(result.errors.some((e) => /eenheid|unit/i.test(e))).toBe(false);
+    expect(result.warnings.some((w) => /hoeveelheid|quantity/i.test(w))).toBe(false);
+  });
+
+  it("a genuinely empty line (no quantity/unit AND no boxesAvailable) still reports both as missing", () => {
+    const result = validateOfferLineForFinalization(
+      validLine({ quantity: null, unit: null, totalStems: null, boxesAvailable: null }),
+    );
+    expect(result.errors.some((e) => /eenheid|unit/i.test(e))).toBe(true);
+    expect(result.warnings.some((w) => /hoeveelheid|quantity/i.test(w))).toBe(true);
+  });
+
+  it("genuine unresolved warnings (e.g. missing price) remain even when boxesAvailable resolves quantity/unit", () => {
+    const result = validateOfferLineForFinalization(
+      validLine({ quantity: null, unit: null, boxesAvailable: 2, fobPricePerStem: null }),
+    );
+    expect(result.warnings.some((w) => /hoeveelheid|quantity/i.test(w))).toBe(false);
+    expect(result.errors.some((e) => /prijs/i.test(e))).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Section D: supplier consistency
 // ---------------------------------------------------------------------------

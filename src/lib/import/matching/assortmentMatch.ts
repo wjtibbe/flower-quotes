@@ -105,6 +105,36 @@ export interface AssortmentMatchResult {
 // ---------------------------------------------------------------------------
 
 /**
+ * The canonical product name this app's assortment uses for roses. Supplier/
+ * AI output uses several generic rose labels ("Rose", "Roses", "Rosa", "Rosa
+ * EC", ...) - see `normalizeRoseProductLabel` below.
+ */
+export const CANONICAL_ROSE_PRODUCT_NAME = "Rosa Ec";
+
+// Exact, case-insensitive generic rose labels this rule recognizes - a fixed,
+// small allowlist (never fuzzy/similarity matching, per the domain rule this
+// implements). Anything not in this set is returned untouched.
+const GENERIC_ROSE_LABELS = new Set(["rose", "roses", "rosa", "rosa ec"]);
+
+/**
+ * Deterministic, global domain normalization (never supplier-specific, never
+ * fuzzy) for the small set of generic rose product labels a supplier/AI
+ * extraction may use, so Farm Offer matching searches the assortment under
+ * the same canonical name it's actually stored as. Only ever touches the
+ * PRODUCT label - never a variety, never any other product family. Returns
+ * the input unchanged when it isn't one of the recognized generic rose
+ * labels (including any specific rose cultivar/variety name, which this rule
+ * must never touch).
+ */
+export function normalizeRoseProductLabel(label: string | null | undefined): string | null {
+  if (!label) return label ?? null;
+  const trimmed = label.trim();
+  if (!trimmed) return null;
+  if (GENERIC_ROSE_LABELS.has(trimmed.toLowerCase())) return CANONICAL_ROSE_PRODUCT_NAME;
+  return label;
+}
+
+/**
  * Resolves a single, consistent "imported product name" from a parsed/
  * persisted line (section 3). No current provider (rule-based, Excel or
  * Anthropic) ever populates `productNameRaw` yet - every one of them only
@@ -112,16 +142,18 @@ export interface AssortmentMatchResult {
  * always falls through to `productGroupRaw` today. `productNameRaw` is
  * still checked first, and preferred, so a future, more specific source
  * doesn't need another change here. Never invents a name: returns null when
- * neither field has real text.
+ * neither field has real text. The generic rose label rule above is applied
+ * here so every caller of this function (matching AND the review screen's
+ * before/after comparison) sees the same canonicalized name.
  */
 export function resolveImportedProductName(line: {
   productNameRaw?: string | null;
   productGroupRaw?: string | null;
 }): string | null {
   const nameRaw = line.productNameRaw?.trim();
-  if (nameRaw) return nameRaw;
+  if (nameRaw) return normalizeRoseProductLabel(nameRaw);
   const groupRaw = line.productGroupRaw?.trim();
-  if (groupRaw) return groupRaw;
+  if (groupRaw) return normalizeRoseProductLabel(groupRaw);
   return null;
 }
 

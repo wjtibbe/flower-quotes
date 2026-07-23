@@ -202,7 +202,7 @@ function profileRow(overrides: Record<string, unknown> = {}) {
       productId: "product-1",
       variety: "Dallas",
       stemLength: "60 cm",
-      product: { name: "Rose" },
+      product: { name: "Rosa Ec" },
     },
     ...overrides,
   };

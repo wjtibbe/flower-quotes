@@ -111,6 +111,7 @@ export function buildOfferLineViewModel(
     stemLengthCm: line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
     totalStems: line.totalStems,
+    boxesAvailable: line.boxesAvailable,
   });
 
   const snapshot =

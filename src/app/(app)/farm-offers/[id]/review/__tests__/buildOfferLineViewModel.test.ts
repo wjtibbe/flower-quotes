@@ -18,7 +18,7 @@ function candidate(overrides: Partial<AssortmentCandidate> = {}): AssortmentCand
     farmId: FARM,
     productVariantId: "variant-1",
     productId: "product-1",
-    productName: "Rose",
+    productName: "Rosa Ec",
     variety: "Dallas",
     stemLength: "60 cm",
     boxType: "QB",
@@ -61,7 +61,7 @@ describe("buildOfferLineViewModel - section 26.A review data", () => {
     const vm = buildOfferLineViewModel(baseLine({ matchStatus: "AUTO_MATCHED" }), FARM, [candidate()]);
     expect(vm.matchStatus).toBe("AUTO_MATCHED");
     expect(vm.matchedOption?.packagingWeightProfileId).toBe("profile-1");
-    expect(vm.matchedOption?.productName).toBe("Rose");
+    expect(vm.matchedOption?.productName).toBe("Rosa Ec");
   });
 
   it("DERIVED: shows the derived product's matched profile", () => {

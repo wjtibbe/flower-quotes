@@ -20,7 +20,7 @@ function candidate(overrides: Partial<AssortmentCandidate> = {}): AssortmentCand
     farmId: FARM,
     productVariantId: "variant-1",
     productId: "product-1",
-    productName: "Rose",
+    productName: "Rosa Ec",
     variety: "Dallas",
     stemLength: "60 cm",
     boxType: "QB",

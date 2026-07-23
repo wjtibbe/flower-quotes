@@ -202,3 +202,46 @@ describe("applyLengthRangeExpansion - the confirmed business rule", () => {
     expect(out[0].fobPricePerStem).toBe("0.38");
   });
 });
+
+describe("applyLengthRangeExpansion - stale range/price warning is dropped once resolved (review-screen fix)", () => {
+  it("a 40-60cm range's AI-authored 'price depends on the range' warning does not linger on a successfully-expanded child", () => {
+    const staleWarning = 'Prijs niet vermeld op regelniveau; lengte "40-60cm" is een range, prijs afhankelijk van de gedeelde prijstabel.';
+    const out = applyLengthRangeExpansion(
+      [line({ lengthRaw: "40-60cm", parserWarnings: [staleWarning] })],
+      MYSTIC_TABLE,
+    );
+    expect(out).toHaveLength(3);
+    for (const l of out) expect(l.parserWarnings).not.toContain(staleWarning);
+  });
+
+  it("a single length's stale 'depends on price table' warning is dropped once resolved from the table", () => {
+    const staleWarning = 'Prijs niet vermeld; lengte "60cm" hangt af van de gedeelde prijstabel.';
+    const out = applyLengthRangeExpansion(
+      [line({ rawText: "1qb be sweet 60cm", lengthRaw: "60cm", fobPricePerStem: undefined, parserWarnings: [staleWarning] })],
+      MYSTIC_TABLE,
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].fobPricePerStem).toBe("0.22");
+    expect(out[0].parserWarnings).not.toContain(staleWarning);
+  });
+
+  it("an unrelated, still-genuine warning (e.g. missing currency) is NEVER dropped", () => {
+    const genuineWarning = "Valuta niet vermeld in de bron - controleer bij review.";
+    const out = applyLengthRangeExpansion(
+      [line({ lengthRaw: "40-60cm", parserWarnings: [genuineWarning] })],
+      MYSTIC_TABLE,
+    );
+    expect(out).toHaveLength(3);
+    for (const l of out) expect(l.parserWarnings).toContain(genuineWarning);
+  });
+
+  it("a genuinely unresolved range warning (endpoint has no tier) is NOT dropped, since the price stays unresolved for it", () => {
+    const out = applyLengthRangeExpansion(
+      [line({ rawText: "1hb Hearts 70-80cm", lengthRaw: "70-80cm", parserWarnings: [] })],
+      MYSTIC_TABLE,
+    );
+    // 80cm has no tier - the genuine, freshly-generated endpoint warning must remain.
+    expect(out).toHaveLength(1);
+    expect(out[0].parserWarnings.some((w) => /80cm/.test(w))).toBe(true);
+  });
+});

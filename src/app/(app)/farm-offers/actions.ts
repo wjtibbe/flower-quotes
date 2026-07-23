@@ -340,6 +340,7 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
     stemLengthCm,
     quantity: quantityRaw,
     totalStems,
+    boxesAvailable,
   });
 
   try {
@@ -421,6 +422,7 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
     stemLengthCm: line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
     totalStems: line.totalStems,
+    boxesAvailable: line.boxesAvailable,
   });
 
   try {
@@ -508,6 +510,7 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
     stemLengthCm: line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
     totalStems: line.totalStems,
+    boxesAvailable: line.boxesAvailable,
   });
 
   try {

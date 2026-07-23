@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   haveMatchAffectingFieldsChanged,
   matchAssortment,
+  normalizeRoseProductLabel,
   parseExactStemLengthCm,
   resolveImportedProductName,
 } from "../assortmentMatch";
@@ -239,12 +240,57 @@ describe("resolveImportedProductName", () => {
   });
 
   it("falls back to productGroupRaw when productNameRaw is absent (today's real parsers only ever fill this one)", () => {
-    expect(resolveImportedProductName({ productGroupRaw: "Rose" })).toBe("Rose");
+    expect(resolveImportedProductName({ productGroupRaw: "Explorer" })).toBe("Explorer");
   });
 
   it("returns null when neither field has real text", () => {
     expect(resolveImportedProductName({})).toBeNull();
     expect(resolveImportedProductName({ productNameRaw: "  ", productGroupRaw: "  " })).toBeNull();
+  });
+
+  it.each(["Rose", "Roses", "Rosa", "Rosa EC", "Rosa Ec", "rose", "  Rose  "])(
+    "normalizes generic rose label %s to the canonical 'Rosa Ec'",
+    (label) => {
+      expect(resolveImportedProductName({ productGroupRaw: label })).toBe("Rosa Ec");
+    },
+  );
+
+  it("does not touch an unrelated product group", () => {
+    expect(resolveImportedProductName({ productGroupRaw: "Hydrangea" })).toBe("Hydrangea");
+  });
+});
+
+describe("normalizeRoseProductLabel", () => {
+  it.each(["Rose", "Roses", "Rosa", "Rosa EC", "Rosa Ec"])("normalizes %s to 'Rosa Ec'", (label) => {
+    expect(normalizeRoseProductLabel(label)).toBe("Rosa Ec");
+  });
+
+  it("leaves an unrelated product name exactly unchanged", () => {
+    expect(normalizeRoseProductLabel("Hydrangea")).toBe("Hydrangea");
+    expect(normalizeRoseProductLabel("Carnation")).toBe("Carnation");
+  });
+
+  it("never renames a rose VARIETY (only the generic product label is in scope)", () => {
+    expect(normalizeRoseProductLabel("Alert")).toBe("Alert");
+    expect(normalizeRoseProductLabel("Freedom")).toBe("Freedom");
+  });
+
+  it("passes through null/undefined/empty unchanged", () => {
+    expect(normalizeRoseProductLabel(null)).toBeNull();
+    expect(normalizeRoseProductLabel(undefined)).toBeNull();
+    expect(normalizeRoseProductLabel("   ")).toBeNull();
+  });
+
+  it("matches Rose/Alert/40 against an existing Rosa Ec/Alert/40 profile end to end", () => {
+    const candidates = [
+      candidate({ packagingWeightProfileId: "p-alert-40", productName: "Rosa Ec", variety: "Alert", stemLength: "40 cm" }),
+    ];
+    const result = matchAssortment(
+      { farmId: FARM, productName: resolveImportedProductName({ productGroupRaw: "Rose" }), variety: "Alert", stemLengthCm: 40 },
+      candidates,
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+    expect(result.packagingWeightProfileId).toBe("p-alert-40");
   });
 });
 

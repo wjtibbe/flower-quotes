@@ -139,6 +139,30 @@ export function hasLengthRange(rawText: string | null | undefined): boolean {
   return Number.isFinite(a) && Number.isFinite(b) && a !== b;
 }
 
+/**
+ * Whether `warning` is the AI's own explanation for THIS line's price being
+ * unresolved because of its length range/table dependency (the model's
+ * system prompt instructs it to explain a null field via `parserWarnings` -
+ * see `TEXT_STRUCTURE_INSTRUCTIONS` in `provider.ts`). Deliberately narrow:
+ * only matches a warning that names the EXACT length spec text as written on
+ * this row (e.g. "40-60cm") together with a price-related word - so it can
+ * never accidentally drop an unrelated, still-genuine warning.
+ */
+function isObsoleteRangePriceWarning(warning: string, lengthSpecText: string): boolean {
+  const w = warning.toLowerCase();
+  return w.includes(lengthSpecText.toLowerCase()) && /prijs|price/.test(w);
+}
+
+/**
+ * Drops a now-stale "price depends on the range/table" warning once THIS
+ * expanded child line's price has actually been resolved - see
+ * `isObsoleteRangePriceWarning`. Every other warning (genuinely unresolved
+ * ones, unrelated field warnings) passes through unchanged.
+ */
+function dropObsoleteRangeWarnings(warnings: readonly string[], lengthSpecText: string): string[] {
+  return warnings.filter((w) => !isObsoleteRangePriceWarning(w, lengthSpecText));
+}
+
 function appendWarnings(line: ParsedOfferLine, warnings: string[]): ParsedOfferLine {
   if (warnings.length === 0) return line;
   return {
@@ -202,11 +226,18 @@ export function applyLengthRangeExpansion(
         continue;
       }
 
+      // This length now has a resolved price - any AI-authored warning that
+      // was only explaining the (now-resolved) range/price dependency for
+      // THIS row is dropped so it doesn't linger as stale on every expanded
+      // child (genuinely unrelated warnings are left untouched).
+      const carriedWarnings = dropObsoleteRangeWarnings(line.parserWarnings, specSource!);
+
       tiers.forEach((tier, idx) => {
         // Endpoint warnings are attached once (to the first expanded line) so
         // they aren't duplicated across every expanded length.
         const base: ParsedOfferLine = {
           ...line,
+          parserWarnings: carriedWarnings,
           lengthCm: tier.lengthCm,
           fobPricePerStem: tier.fobPricePerStem,
         };
@@ -221,6 +252,7 @@ export function applyLengthRangeExpansion(
         const tablePrice = priceByLength.get(spec.cm);
         if (tablePrice) {
           next.fobPricePerStem = tablePrice;
+          next.parserWarnings = dropObsoleteRangeWarnings(next.parserWarnings, specSource!);
         } else {
           result.push(
             appendWarnings(next, [

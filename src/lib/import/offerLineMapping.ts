@@ -1,4 +1,6 @@
 import type { FieldConfidence, OfferUnitLike, ParsedOfferLine } from "./types";
+import { normalizeRoseProductLabel } from "./matching/assortmentMatch";
+import { normalizeBoxTypeForImport } from "./offerLineFilters";
 
 /**
  * Plain JSON-serializable value - deliberately not `Prisma.InputJsonValue`
@@ -238,13 +240,20 @@ export function mapParsedOfferLineToCreateInput(line: ParsedOfferLine): OfferLin
     rawText: line.rawText,
     farmNameRaw: line.farmNameRaw,
     countryOfOrigin: line.countryOfOrigin,
-    productGroupRaw: line.productGroupRaw,
-    productNameRaw: line.productNameRaw,
+    // Deterministic rose-label normalization (global domain rule, never a
+    // fuzzy match, never touching the variety) - only the CURRENT/editable
+    // field is canonicalized; `extractedSnapshot` below is built from the
+    // untouched `line` and always keeps the original AI/supplier wording.
+    productGroupRaw: normalizeRoseProductLabel(line.productGroupRaw) ?? undefined,
+    productNameRaw: normalizeRoseProductLabel(line.productNameRaw) ?? undefined,
     varietyRaw: line.varietyRaw,
     colorRaw: line.colorRaw,
     gradeRaw: line.gradeRaw,
     treatmentRaw: line.treatmentRaw,
-    boxType: line.boxType,
+    // Temporary global rule: "we only offer QB for now" - HB normalizes to
+    // QB on the CURRENT/persisted field only; `extractedSnapshot` below is
+    // built from the untouched `line` and always keeps the original "HB".
+    boxType: normalizeBoxTypeForImport(line.boxType) ?? undefined,
     boxesAvailable,
     stemsPerBox: line.stemsPerBox,
     stemLengthCm: line.lengthCm,

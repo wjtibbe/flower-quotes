@@ -30,6 +30,18 @@ export interface FinalizationCheckInput {
   stemLengthCm: number | null | undefined;
   quantity: string | number | null | undefined;
   totalStems: number | null | undefined;
+  /**
+   * Legacy fallback source (section: stale-warning fix) - today's providers
+   * only ever populate `boxesAvailable`, never `quantity`/`unit` directly (see
+   * `OfferLineReviewRow.tsx`'s own `effectiveUnit`/`effectiveQuantity`
+   * display fallback). Without this, a line the reviewer SEES as "Unit:
+   * Boxes, Quantity: 2" (derived for display from `boxesAvailable`) was
+   * incorrectly reported as missing unit/quantity here, because validation
+   * checked only the raw (still-null) `quantity`/`unit` columns. Optional so
+   * every existing caller/test that doesn't pass it keeps its current
+   * behavior unchanged.
+   */
+  boxesAvailable?: number | null;
 }
 
 export interface FinalizationValidationResult {
@@ -70,14 +82,21 @@ export function validateOfferLineForFinalization(line: FinalizationCheckInput): 
   if (!isPresent(line.currency)) {
     errors.push("Valuta ontbreekt.");
   }
-  if (!line.unit) {
+  // A line whose parser only ever filled the legacy `boxesAvailable` field
+  // (every current provider) is treated as having a resolved unit/quantity
+  // here too - the same fallback the review screen already displays - so a
+  // value the reviewer can see on screen is never reported as missing.
+  const effectiveUnit = line.unit ?? (line.boxesAvailable != null ? "BOXES" : null);
+  const effectiveQuantity = isPresent(line.quantity) ? line.quantity : (line.boxesAvailable ?? null);
+
+  if (!effectiveUnit) {
     errors.push("Eenheid (unit) ontbreekt.");
   }
 
   if (line.stemLengthCm === null || line.stemLengthCm === undefined) {
     warnings.push("Steellengte (cm) ontbreekt.");
   }
-  if (!isPresent(line.quantity)) {
+  if (!isPresent(effectiveQuantity)) {
     warnings.push("Hoeveelheid (quantity) ontbreekt.");
   } else if (line.totalStems === null || line.totalStems === undefined) {
     // Only flagged when a quantity IS present - otherwise the missing-quantity
