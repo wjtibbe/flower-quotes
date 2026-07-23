@@ -20,6 +20,8 @@ import {
   validatePackagingWeightProfileSelection,
   computeLineValidationMessages,
   MANUAL_LINE_RAWTEXT_PLACEHOLDER,
+  enrichParsedOfferLine,
+  type MatchedPackagingInfo,
   type ImportResult,
   type OfferUnitLike,
 } from "@/lib/import";
@@ -179,6 +181,28 @@ export async function uploadFarmOffer(_prevState: UploadFormState, formData: For
     assortmentCandidates,
   );
 
+  // Deterministic enrichment (never AI): once a line has matched a SINGLE
+  // concrete PackagingWeightProfile (AUTO_MATCHED/DERIVED/USER_LINKED - never
+  // AMBIGUOUS/UNMATCHED), that profile's own canonical boxType/stemsPerBox/
+  // weightPerBoxKg become the line's CURRENT values, quantity/unit are
+  // backfilled from the legacy boxesAvailable field when needed, and a
+  // Colombia/Ecuador farm with a stated price but no explicit currency
+  // defaults to USD - see `farmOfferEnrichment.ts` for the exact precedence.
+  // `result.lines` itself is passed to `mapParsedOfferLineToCreateInput`
+  // below as `originalForSnapshot`, so `extractedSnapshot`/`rawText` always
+  // keep the untouched original extraction (HB included) regardless of this
+  // enrichment.
+  const enrichedLines = result.lines.map((line, index) => {
+    const match = matchResults[index];
+    const matchedCandidate = match.packagingWeightProfileId
+      ? (assortmentCandidates.find((c) => c.packagingWeightProfileId === match.packagingWeightProfileId) ?? null)
+      : null;
+    const matchedPackaging: MatchedPackagingInfo | null = matchedCandidate
+      ? { boxType: matchedCandidate.boxType, stemsPerBox: matchedCandidate.stemsPerBox, weightPerBoxKg: matchedCandidate.boxWeight }
+      : null;
+    return enrichParsedOfferLine(line, matchedPackaging, farm.country);
+  });
+
   let farmOfferId: string;
   try {
     farmOfferId = await prisma.$transaction(async (tx) => {
@@ -207,11 +231,12 @@ export async function uploadFarmOffer(_prevState: UploadFormState, formData: For
             // helper's own UNMATCHED/null defaults for
             // packagingWeightProfileId/productVariantId/matchStatus - see
             // `matching/assortmentMatch.ts` for exactly when each status is
-            // produced. `extractedSnapshot` is built solely from the parser
-            // output above and is never touched here - matching data never
-            // flows into it (section 12).
-            create: result.lines.map((line, index) => {
-              const mapped = mapParsedOfferLineToCreateInput(line);
+            // produced. `extractedSnapshot` is built solely from the ORIGINAL
+            // (pre-enrichment) parser output - passed explicitly below as
+            // `originalForSnapshot` - and is never touched by matching or by
+            // the deterministic enrichment above (section 12).
+            create: enrichedLines.map((line, index) => {
+              const mapped = mapParsedOfferLineToCreateInput(line, result.lines[index]);
               const match = matchResults[index];
               return {
                 ...mapped,

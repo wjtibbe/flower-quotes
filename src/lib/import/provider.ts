@@ -42,6 +42,16 @@ export class RuleBasedParserProvider implements ImportParserProvider {
 // ---------------------------------------------------------------------------
 
 // Verified current and correct - do not change without an explicit request.
+/**
+ * The exact warning `mapValidatedLine` pushes when the model found no
+ * currency at all. Exported (rather than an inline string literal) so
+ * downstream deterministic enrichment (`farmOfferEnrichment.ts`) can
+ * reliably recognize and drop this SPECIFIC warning once a deterministic
+ * business rule (e.g. the Colombia/Ecuador USD default) has actually
+ * resolved the currency - by exact string identity, never a fuzzy match.
+ */
+export const CURRENCY_NOT_STATED_WARNING = "Valuta niet vermeld in de bron - controleer bij review.";
+
 const MODEL_ID = "claude-sonnet-5";
 // Output-token budget for ONE structured extraction call. At roughly ~320
 // output tokens per extracted line, 8192 comfortably covers a bounded batch of
@@ -864,7 +874,7 @@ function mapValidatedLine(parsed: ModelLine): ParsedOfferLine {
   }
 
   if (!parsed.currency) {
-    warnings.push("Valuta niet vermeld in de bron - controleer bij review.");
+    warnings.push(CURRENCY_NOT_STATED_WARNING);
   }
 
   const needsReview =

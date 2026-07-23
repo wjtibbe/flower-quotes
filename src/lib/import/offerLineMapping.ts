@@ -216,8 +216,20 @@ export interface OfferLineCreateInput {
  * `updateOfferLine` or any future edit action) must never touch `rawText` or
  * `extractedSnapshot`; today that's simply enforced by neither field being
  * exposed by those actions at all.
+ *
+ * `line` is the (possibly deterministically ENRICHED - see
+ * `farmOfferEnrichment.ts`) line whose fields become the CURRENT/persisted
+ * columns. `originalForSnapshot` defaults to `line` itself (every existing
+ * caller/test is unaffected), but a caller that enriched `line` after
+ * matching (canonical packaging, currency default, quantity/unit backfill,
+ * stale-warning cleanup) passes the PRE-enrichment line here instead, so
+ * `extractedSnapshot` always keeps the original AI/supplier extraction -
+ * HB included - independent of whatever the current, enriched columns say.
  */
-export function mapParsedOfferLineToCreateInput(line: ParsedOfferLine): OfferLineCreateInput {
+export function mapParsedOfferLineToCreateInput(
+  line: ParsedOfferLine,
+  originalForSnapshot: ParsedOfferLine = line,
+): OfferLineCreateInput {
   const quantityNumber = line.quantity !== undefined ? Number(line.quantity) : null;
   const unit = line.unit ?? null;
 
@@ -272,7 +284,7 @@ export function mapParsedOfferLineToCreateInput(line: ParsedOfferLine): OfferLin
     extraLeadTimeHrs: line.extraLeadTimeHrs,
     matchStatus: "UNMATCHED",
     packagingWeightProfileId: null,
-    extractedSnapshot: buildExtractedSnapshot(line),
+    extractedSnapshot: buildExtractedSnapshot(originalForSnapshot),
     validationWarnings,
     confidence: line.confidence,
     fieldConfidence: line.fieldConfidence,

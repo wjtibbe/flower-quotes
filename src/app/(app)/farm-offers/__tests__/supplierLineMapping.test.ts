@@ -197,4 +197,21 @@ describe("updateOfferLine - section 32 user edit never reapplies a supplier mapp
 
     expect(mockSupplierLineMappingFindMany).not.toHaveBeenCalled();
   });
+
+  it("18: 'Opslaan' (updateOfferLine) never creates a SupplierLineMapping - only explicit 'Save as supplier mapping' does", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(
+      line({ varietyRaw: "Dallas", matchStatus: "AUTO_MATCHED", farmOffer: { farmId: "farm-1" } }),
+    );
+    mockPackagingWeightProfileFindMany.mockResolvedValue([]);
+    mockFarmOfferLineUpdate.mockResolvedValue({});
+
+    const fd = new FormData();
+    fd.set("productGroupRaw", "Rose");
+    fd.set("varietyRaw", "Dallas");
+    fd.set("currency", "USD");
+
+    await updateOfferLine("line-1", fd);
+
+    expect(mockSupplierLineMappingCreate).not.toHaveBeenCalled();
+  });
 });

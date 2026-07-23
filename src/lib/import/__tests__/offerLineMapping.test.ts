@@ -245,7 +245,7 @@ describe("mapParsedOfferLineToCreateInput", () => {
       baseLine({ rawText: "1hb Freedom 60cm", boxType: "hb" }),
       baseLine({ rawText: "3hb Dallas 50cm", boxType: " HB " }),
     ];
-    const mapped = lines.map(mapParsedOfferLineToCreateInput);
+    const mapped = lines.map((l) => mapParsedOfferLineToCreateInput(l));
     expect(mapped).toHaveLength(3);
     expect(mapped.every((m) => m.boxType === "QB")).toBe(true);
   });

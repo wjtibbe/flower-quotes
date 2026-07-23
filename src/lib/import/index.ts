@@ -11,3 +11,4 @@ export * from "./uploadValidation";
 export * from "./offerLineMapping";
 export * from "./offerLineValidation";
 export * from "./offerLineFilters";
+export * from "./farmOfferEnrichment";

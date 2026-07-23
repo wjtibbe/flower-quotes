@@ -35,12 +35,16 @@ const mockPackagingWeightProfileFindMany = vi.fn();
 // matcher exactly as before the supplier-mapping step existed, unless a test
 // explicitly overrides it.
 const mockSupplierLineMappingFindMany = vi.fn();
+const mockSupplierLineMappingUpdate = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   prisma: {
     farm: { findUnique: (...args: unknown[]) => mockFarmFindUnique(...args) },
     packagingWeightProfile: { findMany: (...args: unknown[]) => mockPackagingWeightProfileFindMany(...args) },
-    supplierLineMapping: { findMany: (...args: unknown[]) => mockSupplierLineMappingFindMany(...args) },
+    supplierLineMapping: {
+      findMany: (...args: unknown[]) => mockSupplierLineMappingFindMany(...args),
+      update: (...args: unknown[]) => mockSupplierLineMappingUpdate(...args),
+    },
     $transaction: (...args: unknown[]) => mockTransaction(...args),
   },
 }));
@@ -96,6 +100,7 @@ beforeEach(() => {
   mockFarmFindUnique.mockResolvedValue(VALID_FARM);
   mockPackagingWeightProfileFindMany.mockResolvedValue([]);
   mockSupplierLineMappingFindMany.mockResolvedValue([]);
+  mockSupplierLineMappingUpdate.mockResolvedValue({});
   mockSourceUploadCreate.mockResolvedValue({ id: "upload-1" });
   mockFarmOfferCreate.mockResolvedValue({ id: "offer-1" });
   mockTransaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(txMock()));
@@ -350,5 +355,216 @@ describe("uploadFarmOffer - validation", () => {
     const state = await uploadFarmOffer({}, formDataWithText("farm-1", ""));
     expect(state.error).toBeTruthy();
     expect(mockTransaction).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deterministic enrichment from trusted data (the "Sweetness" example):
+// once a line matches a concrete PackagingWeightProfile, that profile's own
+// canonical packaging becomes the CURRENT line, quantity/unit are backfilled
+// from boxesAvailable, a Colombia/Ecuador farm defaults missing currency to
+// USD, totalStems is calculated, and the warnings this resolves disappear -
+// while rawText/extractedSnapshot keep the ORIGINAL extraction (HB included).
+// ---------------------------------------------------------------------------
+
+function sweetnessProfileRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "profile-sweetness",
+    farmId: "farm-1",
+    productVariantId: "variant-sweetness",
+    boxType: "QB",
+    stemsPerBox: 125,
+    weightPerBoxKg: { toString: () => "7.000" },
+    productVariant: {
+      productId: "product-rosa-ec",
+      variety: "Sweetness",
+      stemLength: "40 cm",
+      product: { name: "Rosa Ec" },
+    },
+    ...overrides,
+  };
+}
+
+const SWEETNESS_LINE = {
+  rawText: "2hb Sweetness 40cm",
+  productGroupRaw: "Rose",
+  varietyRaw: "Sweetness",
+  lengthCm: 40,
+  boxType: "HB",
+  boxesAvailable: 2,
+  fobPricePerStem: "0.16",
+  confidence: "medium",
+  fieldConfidence: {},
+  needsReview: true,
+  parserWarnings: ["stemsPerBox not stated.", "Valuta niet vermeld in de bron - controleer bij review."],
+};
+
+describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
+  it("1-9: canonical packaging, backfilled quantity/unit, USD default, totalStems, and rawText/snapshot preserved", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm",
+      lines: [SWEETNESS_LINE],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+
+    // 1: source normalizes to QB.
+    expect(createdLine.boxType).toBe("QB");
+    // 2: rawText is exactly the original supplier text.
+    expect(createdLine.rawText).toBe("2hb Sweetness 40cm");
+    // 3: extractedSnapshot preserves the original HB extraction.
+    expect(createdLine.extractedSnapshot.boxType).toBe("HB");
+    expect(createdLine.extractedSnapshot.rawText).toBe("2hb Sweetness 40cm");
+    // 4: matched the Rosa Ec/Sweetness/40 profile.
+    expect(createdLine.matchStatus).toBe("AUTO_MATCHED");
+    expect(createdLine.packagingWeightProfileId).toBe("profile-sweetness");
+    // 5/6: canonical stemsPerBox/weightPerBoxKg from the matched profile.
+    expect(createdLine.stemsPerBox).toBe(125);
+    expect(createdLine.weightPerBoxKg).toBe("7.000");
+    // 7: quantity(2 boxes) x stemsPerBox(125) = totalStems 250.
+    expect(createdLine.quantity).toBe("2");
+    expect(createdLine.unit).toBe("BOXES");
+    expect(createdLine.totalStems).toBe(250);
+    // 8: Colombia + price present + no explicit currency -> USD.
+    expect(createdLine.currency).toBe("USD");
+    // 20: extractedSnapshot keeps the ORIGINAL, unfiltered parserWarnings.
+    expect(createdLine.extractedSnapshot.parserWarnings).toEqual([
+      "stemsPerBox not stated.",
+      "Valuta niet vermeld in de bron - controleer bij review.",
+    ]);
+    // 12/13: the resolved stemsPerBox/currency warnings are gone from the
+    // CURRENT validationWarnings, even though they remain in the snapshot.
+    expect(createdLine.validationWarnings ?? []).toEqual([]);
+  });
+
+  it("9: an Ecuador farm also defaults missing currency to USD", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Ecuador Farm", country: "Ecuador" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm",
+      lines: [{ ...SWEETNESS_LINE, parserWarnings: [] }],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    expect(createdLine.currency).toBe("USD");
+  });
+
+  it("10: an explicit EUR from a Colombia supplier is preserved, never overwritten", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm EUR 0.20",
+      lines: [{ ...SWEETNESS_LINE, currency: "EUR", fobPricePerStem: "0.20", parserWarnings: [] }],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm EUR 0.20"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    expect(createdLine.currency).toBe("EUR");
+  });
+
+  it("11: a non-Colombia/Ecuador farm's missing currency is NOT silently defaulted by the business rule (the warning genuinely stays unresolved)", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Dutch Farm", country: "Netherlands" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm",
+      lines: [{ ...SWEETNESS_LINE, parserWarnings: ["Valuta niet vermeld in de bron - controleer bij review."] }],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    // The persisted currency column still needs SOME value (NOT NULL), but
+    // the warning must remain because the business rule genuinely did not
+    // resolve it for this country.
+    expect(createdLine.validationWarnings).toContain("Valuta niet vermeld in de bron - controleer bij review.");
+  });
+
+  it("15: a genuinely unresolved field (no assortment match at all) still generates a warning/needs review", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([]); // nothing to match against
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm",
+      lines: [{ ...SWEETNESS_LINE, parserWarnings: ["stemsPerBox not stated."] }],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    expect(createdLine.matchStatus).toBe("UNMATCHED");
+    // No matched profile - stemsPerBox truly is still unknown, so the
+    // warning about it must NOT be suppressed.
+    expect(createdLine.validationWarnings).toContain("stemsPerBox not stated.");
+  });
+
+  it("16: a second, later import of the identical source deterministically re-matches the same profile without any SupplierLineMapping", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
+    mockSupplierLineMappingFindMany.mockResolvedValue([]); // no saved mapping exists
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm",
+      lines: [{ ...SWEETNESS_LINE, parserWarnings: [] }],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+
+    const firstLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    const secondLine = mockFarmOfferCreate.mock.calls[1][0].data.lines.create[0];
+    for (const created of [firstLine, secondLine]) {
+      expect(created.matchStatus).toBe("AUTO_MATCHED");
+      expect(created.packagingWeightProfileId).toBe("profile-sweetness");
+      expect(created.stemsPerBox).toBe(125);
+      expect(created.totalStems).toBe(250);
+    }
+  });
+
+  it("17: an existing SupplierLineMapping still takes precedence over the deterministic engine", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockPackagingWeightProfileFindMany.mockResolvedValue([
+      sweetnessProfileRow({ id: "profile-sweetness" }),
+      sweetnessProfileRow({
+        id: "profile-mapped",
+        productVariantId: "variant-mapped",
+        stemsPerBox: 200,
+        weightPerBoxKg: { toString: () => "9.000" },
+      }),
+    ]);
+    mockSupplierLineMappingFindMany.mockResolvedValue([
+      {
+        id: "mapping-1",
+        farmId: "farm-1",
+        normalizedSource: "2hb sweetness 40cm",
+        packagingWeightProfileId: "profile-mapped",
+        packagingWeightProfile: { farmId: "farm-1", productVariantId: "variant-mapped" },
+      },
+    ]);
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "2hb Sweetness 40cm",
+      lines: [{ ...SWEETNESS_LINE, parserWarnings: [] }],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    expect(createdLine.matchStatus).toBe("USER_LINKED");
+    expect(createdLine.packagingWeightProfileId).toBe("profile-mapped");
+    // Enrichment used the MAPPED profile's own canonical packaging, not the
+    // deterministic engine's candidate.
+    expect(createdLine.stemsPerBox).toBe(200);
+    expect(createdLine.weightPerBoxKg).toBe("9.000");
   });
 });
