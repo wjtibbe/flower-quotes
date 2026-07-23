@@ -1,19 +1,88 @@
 import type { ParsedOfferLine } from "./types";
-import { normalizeDecimalString } from "./normalize";
+import { normalizeDecimalString, parseLengthCm } from "./normalize";
 import { resolveProductGroup } from "./productGroups";
 
 /** A generic in-memory table (rows of raw cell values), independent of the Excel library used. */
 export type SheetTable = unknown[][];
 
+// Per-field synonyms used to map an already-detected header row's columns to
+// actual ParsedOfferLine values (see `buildColumnIndex`/`parseExcelTable`).
+// Extended with common English/Spanish variants a real supplier sheet might
+// use, on top of the original "Open Market"-style column names.
 const HEADER_SYNONYMS: Record<string, string[]> = {
-  product: ["product", "productgroup", "product group", "flower"],
+  product: [
+    "product",
+    "productgroup",
+    "product group",
+    "flower",
+    "item",
+    "article",
+    "artículo",
+    "articulo",
+    "producto",
+    "description",
+    "descripción",
+    "descripcion",
+  ],
   color: ["color", "colour"],
-  variety: ["variety", "varieties"],
+  variety: ["variety", "varieties", "varietal", "variedad", "cultivar"],
   grade: ["grade", "quality", "grado"],
-  boxesAvailable: ["availability (qb)", "availability", "qb", "available", "boxes"],
+  length: ["length", "stem length", "largo", "longitud"],
+  boxesAvailable: ["availability (qb)", "availability", "qb", "available", "boxes", "qty", "quantity", "cantidad", "disponible"],
   stemsPerBox: ["stems x qb", "stems per box", "stems/box", "stemsxqb", "stems x box"],
-  fobPrice: ["fob bta", "fob", "fob price", "fob usd", "fob per stem"],
+  fobPrice: [
+    "fob bta",
+    "fob",
+    "fob price",
+    "fob usd",
+    "fob per stem",
+    "price",
+    "unit price",
+    "price per stem",
+    "stem price",
+    "precio",
+    "precio tallo",
+    "usd/stem",
+  ],
 };
+
+// Header-row DETECTION is a separate, deliberately looser concern from the
+// column-mapping above (section 6: "Maak dit minder fragiel ... Gebruik een
+// score- of categorieaanpak in plaats van één te strenge exacte voorwaarde").
+// A row counts as a header when it has at least one "anchor" column
+// identifying what's being sold (product/variety/description) AND at least
+// one "commercial" column with an actual sellable attribute (price, quantity,
+// length or packaging) - requiring both avoids false positives on a plain
+// title/metadata row that only names a product-ish word in passing.
+const ANCHOR_HEADER_GROUPS: string[][] = [
+  ["product", "productgroup", "product group", "flower", "item", "article", "artículo", "articulo", "producto"],
+  ["variety", "varieties", "varietal", "variedad", "cultivar"],
+  ["description", "descripción", "descripcion"],
+];
+
+const COMMERCIAL_HEADER_GROUPS: string[][] = [
+  [
+    "price",
+    "fob",
+    "fob bta",
+    "fob price",
+    "fob usd",
+    "fob per stem",
+    "unit price",
+    "price per stem",
+    "stem price",
+    "precio",
+    "precio tallo",
+    "usd/stem",
+  ],
+  ["quantity", "qty", "available", "availability", "stems", "bunches", "boxes", "cantidad", "disponible"],
+  ["length", "stem length", "largo", "longitud", "cm"],
+  ["box", "box type", "packing", "pack", "qb", "hb", "fb", "stems per box", "weight", "kg"],
+];
+
+function rowMatchesAnyGroup(normalizedRow: string[], groups: string[][]): boolean {
+  return groups.some((group) => normalizedRow.some((cell) => group.includes(cell)));
+}
 
 /**
  * Tries to find a header row in the sheet and map its columns directly to
@@ -26,9 +95,9 @@ export function findHeaderRow(table: SheetTable, maxScanRows = 10): number | nul
   const limit = Math.min(maxScanRows, table.length);
   for (let i = 0; i < limit; i++) {
     const row = table[i].map((cell) => String(cell ?? "").trim().toLowerCase());
-    const hasProduct = row.some((cell) => HEADER_SYNONYMS.product.includes(cell));
-    const hasFob = row.some((cell) => HEADER_SYNONYMS.fobPrice.includes(cell));
-    if (hasProduct && hasFob) return i;
+    const hasAnchor = rowMatchesAnyGroup(row, ANCHOR_HEADER_GROUPS);
+    const hasCommercial = rowMatchesAnyGroup(row, COMMERCIAL_HEADER_GROUPS);
+    if (hasAnchor && hasCommercial) return i;
   }
   return null;
 }
@@ -73,6 +142,11 @@ export function parseExcelTable(table: SheetTable): ParsedOfferLine[] {
 
     const stemsPerBoxRaw = cell("stemsPerBox");
     const boxesAvailableRaw = cell("boxesAvailable");
+    const lengthRaw = cell("length");
+    const lengthCm =
+      lengthRaw !== undefined && lengthRaw !== null && String(lengthRaw).trim() !== ""
+        ? parseLengthCm(String(lengthRaw)) ?? undefined
+        : undefined;
 
     const fieldConfidence: ParsedOfferLine["fieldConfidence"] = {
       productGroupRaw: recognized ? "high" : "medium",
@@ -86,6 +160,7 @@ export function parseExcelTable(table: SheetTable): ParsedOfferLine[] {
     }
     if (stemsPerBoxRaw !== undefined) fieldConfidence.stemsPerBox = "high";
     if (boxesAvailableRaw !== undefined) fieldConfidence.boxesAvailable = "high";
+    if (lengthCm !== undefined) fieldConfidence.lengthCm = "high";
 
     const stemsPerBox = toInt(stemsPerBoxRaw);
     const needsReview = !fobNormalized || !stemsPerBox || !recognized;
@@ -97,6 +172,7 @@ export function parseExcelTable(table: SheetTable): ParsedOfferLine[] {
       varietyRaw: strOrUndefined(cell("variety")),
       gradeRaw: strOrUndefined(cell("grade")),
       treatmentRaw: "normal",
+      lengthCm,
       boxType: "QB",
       boxesAvailable: toInt(boxesAvailableRaw),
       stemsPerBox,

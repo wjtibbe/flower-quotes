@@ -44,9 +44,10 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  farmOffersCreated    FarmOffer[]    @relation("FarmOfferCreatedBy")
-  quotesCreated        Quote[]        @relation("QuoteCreatedBy")
-  exchangeRatesUpdated ExchangeRate[] @relation("ExchangeRateUpdatedBy")
+  farmOffersCreated           FarmOffer[]           @relation("FarmOfferCreatedBy")
+  quotesCreated               Quote[]               @relation("QuoteCreatedBy")
+  exchangeRatesUpdated        ExchangeRate[]        @relation("ExchangeRateUpdatedBy")
+  supplierLineMappingsCreated SupplierLineMapping[] @relation("SupplierLineMappingCreatedBy")
 }
 
 // ---------------------------------------------------------------------------
@@ -62,11 +63,12 @@ model Farm {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  origin         Origin?                  @relation(fields: [originId], references: [id])
-  aliases        FarmAlias[]
-  offers         FarmOffer[]
-  weightProfiles PackagingWeightProfile[]
-  quoteLines     QuoteLine[]
+  origin               Origin?                  @relation(fields: [originId], references: [id])
+  aliases              FarmAlias[]
+  offers               FarmOffer[]
+  weightProfiles       PackagingWeightProfile[]
+  quoteLines           QuoteLine[]
+  supplierLineMappings SupplierLineMapping[]
 
   @@index([originId])
 }
@@ -150,10 +152,65 @@ model PackagingWeightProfile {
   createdAt        DateTime  @default(now())
   updatedAt        DateTime  @updatedAt
 
-  farm           Farm           @relation(fields: [farmId], references: [id])
-  productVariant ProductVariant @relation(fields: [productVariantId], references: [id])
+  farm                 Farm                  @relation(fields: [farmId], references: [id])
+  productVariant       ProductVariant        @relation(fields: [productVariantId], references: [id])
+  // The supplier-specific assortment article a farm offer line links to -
+  // see the comment on FarmOfferLine.packagingWeightProfileId for why this
+  // model (not ProductVariant, which is supplier-independent) is the correct
+  // assortment-link target.
+  farmOfferLines       FarmOfferLine[]
+  supplierLineMappings SupplierLineMapping[]
 
   @@index([farmId, productVariantId, boxType, stemsPerBox])
+}
+
+// ---------------------------------------------------------------------------
+// Supplier line mappings - a controlled, per-supplier "when this farm writes
+// this exact text, it means this assortment article" record (never fuzzy,
+// never auto-created, never cross-supplier - see the module doc on
+// `supplierLineMapping.ts` for the full matching-precedence rule).
+// ---------------------------------------------------------------------------
+
+model SupplierLineMapping {
+  id     String @id @default(uuid())
+  farmId String
+
+  // The stable matching key - see `normalizeSupplierMappingSource()`. Two
+  // raw texts that normalize to the same value share one mapping.
+  normalizedSource String
+  // The original raw text this mapping was saved from, kept for display/
+  // audit only - never used for matching itself (normalizedSource is).
+  rawSource        String
+
+  packagingWeightProfileId String
+
+  createdById String
+  timesUsed   Int       @default(0)
+  lastUsedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  farm                   Farm                   @relation(fields: [farmId], references: [id])
+  // Cascade: a mapping without its target assortment article has no value
+  // at all (the user's explicit preference) - deleting the profile removes
+  // any mapping that pointed to it, rather than leaving a dangling record a
+  // later import would have to specially detect and skip.
+  packagingWeightProfile PackagingWeightProfile @relation(fields: [packagingWeightProfileId], references: [id], onDelete: Cascade)
+  // No explicit onDelete - same convention as FarmOffer.createdBy /
+  // Quote.createdBy (both also unset): deleting a user who has created
+  // mapping history is restricted, exactly like it already is for offers
+  // and quotes, so this doesn't introduce a new, inconsistent behavior.
+  createdBy              User                   @relation("SupplierLineMappingCreatedBy", fields: [createdById], references: [id])
+
+  // One mapping per (farm, normalized source) - see the module doc for why
+  // there is deliberately no `isActive` column: this app already replaced
+  // soft-delete/deactivate with real deletes everywhere (see the
+  // `active`-removal migration), so a mapping the user no longer wants is
+  // simply deleted, not deactivated.
+  @@unique([farmId, normalizedSource])
+  @@index([farmId])
+  @@index([packagingWeightProfileId])
 }
 
 // ---------------------------------------------------------------------------
@@ -459,13 +516,63 @@ enum ConfidenceLevel {
   LOW
 }
 
+// Generic quantity unit for an import line (section: "invoerzijde verbeteren
+// / datamodel uitbreiden"). Deliberately broader than the legacy
+// `boxesAvailable` (which only ever meant "number of boxes") so a line
+// quoted in stems, bunches or kilograms can be represented without forcing
+// it into a box count.
+enum OfferUnit {
+  STEMS
+  BUNCHES
+  BOXES
+  KILOGRAMS
+}
+
+// Supplier prices in this application are, for now, always quoted per stem -
+// this enum exists purely as explicit, self-documenting metadata on the
+// line (matching `fobPricePerStem`'s existing meaning) so a future price
+// unit (e.g. per bunch or per box) can be added later without an ambiguous,
+// undocumented assumption baked into every existing row.
+enum PriceUnit {
+  PER_STEM
+}
+
+// Status of a FarmOfferLine's link to its supplier-specific assortment
+// article (a PackagingWeightProfile row - see the comment on
+// `packagingWeightProfileId` below for why that model, not ProductVariant,
+// is the correct link target). No automatic matching exists yet (that is a
+// later step) - every line created by this step's import mapping starts as
+// UNMATCHED.
+enum LineMatchStatus {
+  UNMATCHED // no assortment link yet
+  AUTO_MATCHED // supplier + product + variety + length gave exactly one candidate
+  AMBIGUOUS // more than one possible assortment article
+  DERIVED // at least one key part (e.g. product) was deterministically derived from other assortment data
+  USER_LINKED // a user explicitly chose the assortment article
+}
+
 model FarmOfferLine {
-  id               String  @id @default(uuid())
-  farmOfferId      String
-  productVariantId String?
+  id                       String  @id @default(uuid())
+  farmOfferId              String
+  productVariantId         String?
+  // The supplier-specific assortment article (farm + product variant +
+  // packaging) this line has been linked to. Deliberately points at
+  // PackagingWeightProfile, not ProductVariant: ProductVariant is supplier-
+  // independent, while PackagingWeightProfile is the one existing model that
+  // already represents "this exact article, as sold by this exact supplier,
+  // in this exact packaging" (farmId + productVariantId + boxType +
+  // stemsPerBox) - i.e. it practically already *is* this supplier's
+  // assortment item. Using ProductVariant alone here would be a misleading
+  // link that silently ignores which supplier's packaging/pricing an offer
+  // line actually belongs to. Kept alongside `productVariantId` (unchanged,
+  // still used by existing screens) rather than replacing it, for backward
+  // compatibility - see the module doc on `offerLineMapping.ts`/
+  // `offerLineValidation.ts` for the (not yet wired up) validation that a
+  // chosen profile's farmId must match this line's own FarmOffer.farmId.
+  packagingWeightProfileId String?
 
   // Raw / as-recognized fields (always kept, independent of productVariant link)
-  rawText          String // original unstructured line, verbatim
+  rawText          String // original unstructured line, verbatim - never overwritten by later corrections
   farmNameRaw      String?
   countryOfOrigin  String?
   originId         String?
@@ -476,15 +583,47 @@ model FarmOfferLine {
   gradeRaw         String?
   treatmentRaw     String? // normal / tinted / painted / ...
   boxType          String?
-  boxesAvailable   Int?
+  boxesAvailable   Int? // legacy "number of boxes" field - kept for backward compatibility, see `quantity`/`unit` below
   stemsPerBox      Int?
-  fobPricePerStem  Decimal?  @db.Decimal(10, 4)
-  currency         Currency  @default(USD)
-  weightPerBoxKg   Decimal?  @db.Decimal(10, 3)
-  notes            String?
+  // Stem length in whole centimeters (e.g. 40, 60, 100). A range like
+  // "50-70 cm" is never silently collapsed into one number - it stays null
+  // here, with the original text preserved in `rawText`/`extractedSnapshot`
+  // and a validationWarning added instead (see `mapParsedOfferLineToCreateInput`).
+  stemLengthCm     Int?
+  // Generic quantity + unit (section 3), the preferred fields for new
+  // imports over the legacy `boxesAvailable`. Decimal so a kilogram amount
+  // or a half/fractional unit doesn't need to be truncated.
+  quantity         Decimal?   @db.Decimal(12, 3)
+  unit             OfferUnit?
+  // Total individual stems this line represents, computed once (via the pure
+  // `calculateTotalStems` helper) only when that's actually derivable without
+  // guessing - see that helper's doc comment for exactly when it is/isn't.
+  totalStems       Int?
+  fobPricePerStem  Decimal?   @db.Decimal(10, 4)
+  currency         Currency   @default(USD)
+  // Explicit metadata: `fobPricePerStem` is always a per-stem price today -
+  // see the PriceUnit enum doc comment above.
+  priceUnit        PriceUnit  @default(PER_STEM)
+  weightPerBoxKg   Decimal?   @db.Decimal(10, 3)
+  notes            String? // human-entered remarks - distinct from validationWarnings/validationErrors below, which are parser/system-generated
   extraLeadTimeHrs Int? // "Additional time required 72 HR"
   validFrom        DateTime?
   validUntil       DateTime?
+
+  // Status of the assortment link above - see the LineMatchStatus enum doc.
+  matchStatus LineMatchStatus @default(UNMATCHED)
+
+  // Immutable snapshot of the original structured parser output at import
+  // time (built by `buildExtractedSnapshot`) - a later correction to this
+  // row's own fields (via updateOfferLine or any future edit action) must
+  // never rewrite this column, so the AI's original extraction stays
+  // available for audit even after a human overrides it.
+  extractedSnapshot  Json?
+  // Parser-generated warnings/errors from import (`normalizeValidationMessages`),
+  // as a JSON string[] - kept separate from `notes` above, which is reserved
+  // for human-entered remarks so the two are never mixed together.
+  validationWarnings Json?
+  validationErrors   Json?
 
   confidence      ConfidenceLevel @default(MEDIUM)
   fieldConfidence Json? // per-field confidence map for fine-grained review UI
@@ -493,13 +632,24 @@ model FarmOfferLine {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  farmOffer      FarmOffer       @relation(fields: [farmOfferId], references: [id], onDelete: Cascade)
-  productVariant ProductVariant? @relation(fields: [productVariantId], references: [id])
-  origin         Origin?         @relation(fields: [originId], references: [id])
-  quoteLines     QuoteLine[]
+  farmOffer              FarmOffer               @relation(fields: [farmOfferId], references: [id], onDelete: Cascade)
+  productVariant         ProductVariant?         @relation(fields: [productVariantId], references: [id])
+  // SetNull, not Cascade: deleting a supplier's assortment article
+  // (PackagingWeightProfile) must never silently delete historical offer
+  // lines that reference it - those lines simply fall back to UNMATCHED and
+  // need to be re-linked, rather than disappearing. Restrict was considered
+  // but would block deleting a PackagingWeightProfile at all once any offer
+  // line ever referenced it, which is stricter than this codebase's existing
+  // delete philosophy (see the top-of-schema note: real deletes, blocked
+  // only where silently breaking a historical snapshot is the actual risk -
+  // here SetNull removes exactly that risk without blocking the delete).
+  packagingWeightProfile PackagingWeightProfile? @relation(fields: [packagingWeightProfileId], references: [id], onDelete: SetNull)
+  origin                 Origin?                 @relation(fields: [originId], references: [id])
+  quoteLines             QuoteLine[]
 
   @@index([farmOfferId])
   @@index([productVariantId])
+  @@index([packagingWeightProfileId])
 }
 
 // ---------------------------------------------------------------------------

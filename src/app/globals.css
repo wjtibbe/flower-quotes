@@ -48,4 +48,22 @@
   .badge-low {
     @apply badge bg-red-100 text-red-800;
   }
+  /* Match-status badges (farm-offer review screen) - same `.badge` shape as
+     the confidence badges above, one distinct color per LineMatchStatus so
+     they're visually distinguishable at a glance. */
+  .badge-auto-matched {
+    @apply badge bg-green-100 text-green-800;
+  }
+  .badge-derived {
+    @apply badge bg-teal-100 text-teal-800;
+  }
+  .badge-ambiguous {
+    @apply badge bg-amber-100 text-amber-800;
+  }
+  .badge-unmatched {
+    @apply badge bg-gray-200 text-gray-700;
+  }
+  .badge-user-linked {
+    @apply badge bg-blue-100 text-blue-800;
+  }
 }

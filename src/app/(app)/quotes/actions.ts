@@ -14,11 +14,129 @@ import { buildCustomerExcel, buildInternalExcel } from "@/lib/exports/excel";
 import { quoteForExportInclude } from "@/lib/exports/types";
 import { normalizeBulkIds } from "@/lib/bulkIds";
 import type { ActionResult } from "@/lib/actionResult";
+import { isFarmOfferLineQuotable } from "@/lib/quotes/lineGating";
+import { resolveCanonicalPackaging } from "@/lib/quotes/canonicalPackaging";
+import { resolveOfferLinePricingQuantity, type OfferLineUnit } from "@/lib/quotes/quantityResolution";
+import { isPackagingProfileValidForSupplier } from "@/lib/import/offerLineValidation";
 
 async function requireUserId(): Promise<string> {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) throw new Error("Niet ingelogd");
   return session.user.id;
+}
+
+/** A resolved, quote-safe packaging + quantity snapshot for one FarmOfferLine. */
+interface ResolvedQuoteLineInput {
+  stemsPerBox: number;
+  weightPerBoxKg: string | null;
+  quantityBoxes: number;
+  totalStems: number;
+}
+
+/** Short, non-technical label for a line in an error message - never a Prisma id/internal detail. */
+function describeLineForError(line: { varietyRaw: string | null; productGroupRaw: string | null; rawText: string }): string {
+  const label = [line.productGroupRaw, line.varietyRaw].filter(Boolean).join(" ");
+  return label || line.rawText.slice(0, 40);
+}
+
+/**
+ * Re-reads every requested FarmOfferLine fresh from the database and
+ * re-validates it server-side - the server action is leading, a
+ * manipulated client can never smuggle in a DRAFT offer's line or an
+ * unmatched/ambiguous line just because it once appeared in a page's HTML
+ * (section 1/2 of the quote-pipeline consistency fix). Checks, per line:
+ *   - the line still exists
+ *   - its offer is REVIEWED and its matchStatus is one of the quotable ones
+ *   - its PackagingWeightProfile (if any) belongs to the SAME supplier as
+ *     the offer - a database FK cannot express that on its own
+ *   - a price and currency are present
+ *   - the offer's quantity/unit can be deterministically resolved to a whole
+ *     number of boxes (see `resolveOfferLinePricingQuantity` - never a
+ *     silent "1 box" default)
+ *
+ * All-or-nothing: if ANY requested line fails any of these checks, NO quote
+ * is created for ANY customer and nothing is written - never a partial
+ * quote built from a mix of valid and invalid lines (section 14).
+ */
+async function loadAndValidateQuotableLines(lineIds: string[]) {
+  const lines = await prisma.farmOfferLine.findMany({
+    where: { id: { in: lineIds } },
+    include: { farmOffer: { include: { farm: true } }, packagingWeightProfile: true },
+  });
+  const lineById = new Map(lines.map((l) => [l.id, l]));
+
+  const errors: string[] = [];
+  const resolved = new Map<string, (typeof lines)[number] & { __resolved: ResolvedQuoteLineInput }>();
+
+  for (const id of lineIds) {
+    const line = lineById.get(id);
+    if (!line) {
+      errors.push("Offerregel bestaat niet meer.");
+      continue;
+    }
+    const label = describeLineForError(line);
+
+    const gate = isFarmOfferLineQuotable({
+      offerStatus: line.farmOffer.status,
+      matchStatus: line.matchStatus,
+      packagingWeightProfileId: line.packagingWeightProfileId,
+    });
+    if (!gate.ok) {
+      errors.push(`${label}: ${gate.message}`);
+      continue;
+    }
+
+    if (
+      line.packagingWeightProfile &&
+      !isPackagingProfileValidForSupplier(line.farmOffer.farmId, line.packagingWeightProfile.farmId)
+    ) {
+      errors.push(`${label}: Packaging profile belongs to another supplier.`);
+      continue;
+    }
+
+    if (line.fobPricePerStem == null) {
+      errors.push(`${label}: FOB price is missing.`);
+      continue;
+    }
+    if (!line.currency) {
+      errors.push(`${label}: Currency is missing.`);
+      continue;
+    }
+
+    const packaging = resolveCanonicalPackaging(line.packagingWeightProfile, {
+      boxType: line.boxType,
+      stemsPerBox: line.stemsPerBox,
+      weightPerBoxKg: line.weightPerBoxKg,
+    });
+
+    const quantity = resolveOfferLinePricingQuantity({
+      quantity: line.quantity != null ? Number(line.quantity.toString()) : null,
+      unit: line.unit as OfferLineUnit | null,
+      boxesAvailable: line.boxesAvailable,
+      stemsPerBox: packaging.stemsPerBox,
+    });
+    if (!quantity.ok) {
+      errors.push(`${label}: ${quantity.message}`);
+      continue;
+    }
+
+    resolved.set(id, {
+      ...line,
+      __resolved: {
+        stemsPerBox: quantity.stemsPerBox,
+        weightPerBoxKg: packaging.weightPerBoxKg,
+        quantityBoxes: quantity.quantityBoxes,
+        totalStems: quantity.totalStems,
+      },
+    });
+  }
+
+  if (errors.length > 0) {
+    const uniqueErrors = [...new Set(errors)].slice(0, 5);
+    throw new Error(`Kan geen offerte maken - ${uniqueErrors.join("; ")}.`);
+  }
+
+  return resolved;
 }
 
 export async function createQuotes(formData: FormData): Promise<void> {
@@ -31,10 +149,12 @@ export async function createQuotes(formData: FormData): Promise<void> {
   if (lineIds.length === 0) throw new Error("Geen productregels geselecteerd");
   if (customerIds.length === 0) throw new Error("Geen klanten geselecteerd");
 
-  const lines = await prisma.farmOfferLine.findMany({
-    where: { id: { in: lineIds } },
-    include: { farmOffer: { include: { farm: true } } },
-  });
+  // Gating + quantity/packaging resolution happens once, up front, for the
+  // whole batch - before any customer loop and before any write - so an
+  // invalid line blocks quote creation entirely rather than silently being
+  // skipped for one customer while still (partially) quoted for another.
+  const resolvedLines = await loadAndValidateQuotableLines(lineIds);
+  const lines = [...resolvedLines.values()];
 
   const createdQuoteIds: string[] = [];
   const skipReasons: string[] = [];
@@ -67,6 +187,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
         incoterm,
         currency,
         marginPercent,
+        { stemsPerBox: line.__resolved.stemsPerBox, weightPerBoxKg: line.__resolved.weightPerBoxKg },
         destinationId,
         exchangeRateOverride,
       );
@@ -121,8 +242,12 @@ export async function createQuotes(formData: FormData): Promise<void> {
             farmId: line.farmOffer.farmId,
             fobPricePerStem: breakdown.fobPricePerStem.toString(),
             sourceCurrency: line.currency,
-            weightPerBoxKg: line.weightPerBoxKg,
-            stemsPerBox: line.stemsPerBox!,
+            // Canonical packaging snapshot, resolved once up front (profile
+            // over legacy, never a guess) - frozen here forever, so the
+            // quote never silently changes if the assortment profile does
+            // (section 6/9/21 of the consistency fix).
+            weightPerBoxKg: line.__resolved.weightPerBoxKg,
+            stemsPerBox: line.__resolved.stemsPerBox,
             // Snapshot of the freight rate actually used, so the quote stays
             // explainable even after the route's rates change later.
             freightRatePerKg: context.freightRatePerKg,
@@ -144,7 +269,8 @@ export async function createQuotes(formData: FormData): Promise<void> {
             exchangeRateValue: breakdown.exchangeRateUsed ? breakdown.exchangeRateUsed.toString() : null,
             marginPercent: breakdown.marginPercent.toString(),
             calculatedSellPricePerStem: breakdown.calculatedSellPricePerStemRounded.toString(),
-            quantityBoxes: line.boxesAvailable ?? 1,
+            // Exact resolved quantity - never a silent "1 box" default (section 3).
+            quantityBoxes: line.__resolved.quantityBoxes,
           })),
         },
       },

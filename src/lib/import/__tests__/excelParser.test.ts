@@ -33,6 +33,55 @@ describe("findHeaderRow", () => {
   it("returns null when there is no recognizable header", () => {
     expect(findHeaderRow([["a", "b"], ["c", "d"]])).toBeNull();
   });
+
+  it("recognizes a minimal product + price header", () => {
+    expect(findHeaderRow([["Product", "Price"], ["Dallas", "0.38"]])).toBe(0);
+  });
+
+  it("recognizes a minimal variety + quantity header", () => {
+    expect(findHeaderRow([["Variety", "Quantity"], ["Dallas", "100"]])).toBe(0);
+  });
+
+  it("recognizes a minimal description + length header", () => {
+    expect(findHeaderRow([["Description", "Length"], ["Dallas", "60"]])).toBe(0);
+  });
+
+  it("recognizes Spanish headers (producto/variedad + precio/cantidad/largo)", () => {
+    expect(findHeaderRow([["Producto", "Variedad", "Precio", "Cantidad"], ["Rosa", "Dallas", "0.38", "100"]])).toBe(0);
+    expect(findHeaderRow([["Artículo", "Largo"], ["Rosa", "60"]])).toBe(0);
+  });
+
+  it("does not treat a row as a header when it has an anchor column but no commercial column at all", () => {
+    expect(findHeaderRow([["Product", "Notes"], ["Dallas", "some remark"]])).toBeNull();
+  });
+
+  it("does not treat a row as a header when it only has a commercial column and no product/variety/description anchor", () => {
+    expect(findHeaderRow([["Price", "Weight"], ["0.38", "8"]])).toBeNull();
+  });
+
+  it("skips a loose title row above the real header even when the title mentions a product-ish word in passing", () => {
+    const withTitle: SheetTable = [
+      ["Weekly rose offer - week 30"],
+      ["Product", "Price"],
+      ["Dallas", "0.38"],
+    ];
+    expect(findHeaderRow(withTitle)).toBe(1);
+  });
+
+  it("finds a header within the default 10-row scan limit", () => {
+    const rows: SheetTable = Array.from({ length: 9 }, (_, i) => [`metadata ${i}`]);
+    rows.push(["Product", "Price"]);
+    rows.push(["Dallas", "0.38"]);
+    expect(findHeaderRow(rows)).toBe(9);
+  });
+
+  it("does not find a header past the scan limit, but does when the limit is raised to cover it", () => {
+    const rows: SheetTable = Array.from({ length: 11 }, (_, i) => [`metadata ${i}`]);
+    rows.push(["Product", "Price"]);
+    rows.push(["Dallas", "0.38"]);
+    expect(findHeaderRow(rows)).toBeNull();
+    expect(findHeaderRow(rows, 15)).toBe(11);
+  });
 });
 
 describe("parseExcelTable", () => {

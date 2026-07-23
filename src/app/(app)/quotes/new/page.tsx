@@ -2,6 +2,9 @@ import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
 import { variantLabel } from "@/lib/variantLabel";
 import { createQuotes } from "../actions";
+import { QUOTABLE_MATCH_STATUSES, QUOTABLE_OFFER_STATUS } from "@/lib/quotes/lineGating";
+import { resolveCanonicalPackaging } from "@/lib/quotes/canonicalPackaging";
+import { resolveOfferLinePricingQuantity, type OfferLineUnit } from "@/lib/quotes/quantityResolution";
 
 export const dynamic = "force-dynamic";
 
@@ -14,32 +17,68 @@ export default async function NewQuotePage({
     Array.isArray(searchParams.lineIds) ? searchParams.lineIds : searchParams.lineIds ? [searchParams.lineIds] : []
   ).filter(Boolean);
 
-  // All priced lines are candidates, so one offerte can combine regels from
-  // multiple leveranciers. The lineIds from the URL arrive pre-checked; the
-  // user can add or remove lines (across suppliers) before calculating.
+  // Only REVIEWED offers with a confirmed assortment match are quote
+  // candidates at all (section 1.A of the quote-pipeline consistency fix) -
+  // an UNMATCHED/AMBIGUOUS line, or any line on a still-DRAFT offer, must
+  // never even appear as a selectable row here. Beyond that gate, a priced
+  // line is a candidate so one offerte can combine regels from multiple
+  // leveranciers. The lineIds from the URL arrive pre-checked; the user can
+  // add or remove lines (across suppliers) before calculating.
   const [candidateLines, customers, destinations, activeRates] = await Promise.all([
     prisma.farmOfferLine.findMany({
-      where: { OR: [{ fobPricePerStem: { not: null } }, { id: { in: lineIds } }] },
-      include: { productVariant: { include: { product: true } }, farmOffer: { include: { farm: true } } },
+      where: {
+        farmOffer: { status: QUOTABLE_OFFER_STATUS },
+        matchStatus: { in: [...QUOTABLE_MATCH_STATUSES] },
+        packagingWeightProfileId: { not: null },
+        OR: [{ fobPricePerStem: { not: null } }, { id: { in: lineIds } }],
+      },
+      include: {
+        productVariant: { include: { product: true } },
+        farmOffer: { include: { farm: true } },
+        packagingWeightProfile: true,
+      },
     }),
     prisma.customer.findMany({ include: { destination: true }, orderBy: { companyName: "asc" } }),
     prisma.destination.findMany({ orderBy: { city: "asc" } }),
     prisma.exchangeRate.findMany({ orderBy: { effectiveFrom: "desc" } }),
   ]);
 
-  const selectedSet = new Set(lineIds);
-  const lines = [...candidateLines].sort((a, b) => {
-    const bySelected = Number(selectedSet.has(b.id)) - Number(selectedSet.has(a.id));
-    if (bySelected !== 0) return bySelected;
-    const byFarm = (a.farmOffer.farm?.name ?? "").localeCompare(b.farmOffer.farm?.name ?? "");
-    if (byFarm !== 0) return byFarm;
-    return a.createdAt.getTime() - b.createdAt.getTime();
+  // Resolve each candidate's quotable quantity up front (same pure helper
+  // `createQuotes` re-validates with server-side) so the wizard can show
+  // "5 boxes / 500 stems" instead of the raw legacy boxesAvailable, and so a
+  // line whose unit the pricing engine cannot yet convert (bunches,
+  // kilograms, a non-divisible stem count) shows disabled with a reason
+  // instead of a normal selectable candidate (section 11).
+  const linesWithQuantity = candidateLines.map((line) => {
+    const packaging = resolveCanonicalPackaging(line.packagingWeightProfile, {
+      boxType: line.boxType,
+      stemsPerBox: line.stemsPerBox,
+      weightPerBoxKg: line.weightPerBoxKg,
+    });
+    const quantity = resolveOfferLinePricingQuantity({
+      quantity: line.quantity != null ? Number(line.quantity.toString()) : null,
+      unit: line.unit as OfferLineUnit | null,
+      boxesAvailable: line.boxesAvailable,
+      stemsPerBox: packaging.stemsPerBox,
+    });
+    return { line, quantity };
   });
-  const supplierCount = new Set(lines.filter((l) => selectedSet.has(l.id)).map((l) => l.farmOffer.farmId)).size;
+
+  const selectedSet = new Set(lineIds);
+  const lines = [...linesWithQuantity].sort((a, b) => {
+    const bySelected = Number(selectedSet.has(b.line.id)) - Number(selectedSet.has(a.line.id));
+    if (bySelected !== 0) return bySelected;
+    const byFarm = (a.line.farmOffer.farm?.name ?? "").localeCompare(b.line.farmOffer.farm?.name ?? "");
+    if (byFarm !== 0) return byFarm;
+    return a.line.createdAt.getTime() - b.line.createdAt.getTime();
+  });
+  const supplierCount = new Set(
+    lines.filter(({ line }) => selectedSet.has(line.id)).map(({ line }) => line.farmOffer.farmId),
+  ).size;
 
   // The source currencies present in the candidate lines, used to decide per
   // customer whether a conversion (and thus an exchange rate) applies.
-  const lineCurrencies = [...new Set(lines.map((l) => l.currency))];
+  const lineCurrencies = [...new Set(lines.map(({ line }) => line.currency))];
 
   /** "1 from = X to" using a rate in either stored direction, or null. */
   function currentRateFor(from: string, to: string): string | null {
@@ -82,18 +121,21 @@ export default async function NewQuotePage({
                 <th>Leverancier</th>
                 <th>Product</th>
                 <th>Box</th>
+                <th>Hoeveelheid</th>
                 <th>FOB</th>
               </tr>
             </thead>
             <tbody>
-              {lines.map((line) => (
-                <tr key={line.id}>
+              {lines.map(({ line, quantity }) => (
+                <tr key={line.id} className={quantity.ok ? undefined : "opacity-60"}>
                   <td>
                     <input
                       type="checkbox"
                       name="lineIds"
                       value={line.id}
-                      defaultChecked={selectedSet.has(line.id)}
+                      defaultChecked={quantity.ok && selectedSet.has(line.id)}
+                      disabled={!quantity.ok}
+                      title={quantity.ok ? undefined : quantity.message}
                     />
                   </td>
                   <td className="font-medium">{line.farmOffer.farm?.name ?? "-"}</td>
@@ -105,12 +147,21 @@ export default async function NewQuotePage({
                   <td>
                     {line.boxType} · {line.stemsPerBox ?? "?"} stelen
                   </td>
+                  <td>
+                    {quantity.ok ? (
+                      `${quantity.quantityBoxes} dozen · ${quantity.totalStems} stelen`
+                    ) : (
+                      <span className="text-xs text-red-600" title={quantity.message}>
+                        Niet quoteable - {quantity.message}
+                      </span>
+                    )}
+                  </td>
                   <td>{line.fobPricePerStem ? `${line.currency} ${fmtMoney(line.fobPricePerStem, 4)}` : "ontbreekt"}</td>
                 </tr>
               ))}
               {lines.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="text-center text-gray-400 py-6">
+                  <td colSpan={6} className="text-center text-gray-400 py-6">
                     Geen berekenbare productregels beschikbaar. Upload eerst een leveranciersaanbieding.
                   </td>
                 </tr>

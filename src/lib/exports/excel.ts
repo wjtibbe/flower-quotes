@@ -49,7 +49,8 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
     "Behandeling",
     "Box type",
     "Stelen/doos",
-    "Dozen beschikbaar",
+    "Dozen",
+    "Totaal stelen",
     "Prijs per steel",
     "Valuta",
     "Incoterm",
@@ -66,6 +67,10 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
   for (const line of quote.lines) {
     const variant = line.farmOfferLine.productVariant;
     const finalPrice = Number((line.manualSellPricePerStem ?? line.calculatedSellPricePerStem).toString());
+    // Quantity/stems come from the QuoteLine's own frozen snapshot (the
+    // quoted amount), never re-interpreted live from the FarmOfferLine's
+    // (possibly different, and for new-style lines not even box-shaped)
+    // availability - see the quote-pipeline consistency fix.
     sheet.getRow(r).values = [
       variant?.product.productGroup ?? line.farmOfferLine.productGroupRaw ?? "",
       variant?.product.name ?? line.farmOfferLine.productGroupRaw ?? "",
@@ -76,7 +81,8 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
       line.farmOfferLine.treatmentRaw ?? "",
       line.farmOfferLine.boxType ?? "",
       line.stemsPerBox,
-      line.farmOfferLine.boxesAvailable ?? "",
+      line.quantityBoxes,
+      line.quantityBoxes * line.stemsPerBox,
       finalPrice,
       quote.currency,
       quote.incoterm,
@@ -84,7 +90,7 @@ export async function buildCustomerExcel(quote: QuoteForExport): Promise<Buffer>
       quote.destination?.city ?? "",
       line.farmOfferLine.notes ?? "",
     ];
-    sheet.getCell(`K${r}`).numFmt = "0.00";
+    sheet.getCell(`L${r}`).numFmt = "0.00";
     r++;
   }
 
@@ -105,6 +111,9 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
   const columns = [
     "Product",
     "Leverancier",
+    "Dozen",
+    "Stelen/doos",
+    "Totaal stelen",
     "Incoterm",
     "FOB/steel",
     "Vracht/steel",
@@ -152,6 +161,11 @@ export async function buildInternalExcel(quote: QuoteForExport): Promise<Buffer>
         : line.farmOfferLine.productGroupRaw ?? "",
       // Supplier snapshot on the line itself; farm-offer path for legacy lines.
       line.farm?.name ?? line.farmOfferLine.farmOffer.farm?.name ?? "",
+      // Quantity/stems from the QuoteLine snapshot (the actually-quoted
+      // amount), never re-derived from the FarmOfferLine's own availability.
+      line.quantityBoxes,
+      line.stemsPerBox,
+      line.quantityBoxes * line.stemsPerBox,
       quote.incoterm,
       Number(line.fobPricePerStem.toString()),
       decOrZero(line.freightPerStem),

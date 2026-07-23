@@ -30,6 +30,21 @@ export function normalizeDecimalString(input: string): string | null {
   return s;
 }
 
+/**
+ * Extracts a stem length in centimeters from a mention like "60", "60CM",
+ * "60 cm", "60,5cm" - all treated as the same underlying numeric length, so
+ * "60", "60CM" and "60 cm" mean the same thing. Returns a plain number
+ * (never a display string with a unit suffix) so a length is never mistaken
+ * for - or concatenated into - a text field like variety. Returns null when
+ * no recognizable number is present; never invents a value.
+ */
+export function parseLengthCm(input: string): number | null {
+  const match = input.trim().replace(",", ".").match(/(\d+(?:\.\d+)?)/);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface BoxPatternMatch {
   boxesAvailable: number;
   stemsPerBox: number;

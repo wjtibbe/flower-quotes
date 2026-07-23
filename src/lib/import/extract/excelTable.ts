@@ -21,9 +21,10 @@ export async function extractExcelTables(buffer: Buffer): Promise<{ sheetName: s
  * ExcelJS returns plain values for simple cells, but formula cells, rich text
  * and hyperlinks come back as objects (e.g. `{ formula, result }`). Normalize
  * everything to a plain primitive so downstream parsing/display never sees
- * "[object Object]".
+ * "[object Object]". Exported so `csv.ts` can apply the exact same
+ * normalization to rows read via ExcelJS's CSV reader.
  */
-function cellToPrimitive(value: unknown): unknown {
+export function cellToPrimitive(value: unknown): unknown {
   if (value === null || value === undefined) return null;
   if (value instanceof Date) return value;
   if (typeof value !== "object") return value;

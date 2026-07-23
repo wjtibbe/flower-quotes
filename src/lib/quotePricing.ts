@@ -230,12 +230,26 @@ export interface LinePricingResult {
   context: ResolvedPricingContext;
 }
 
+/**
+ * The packaging values pricing actually calculates with. Callers must
+ * resolve these via `resolveCanonicalPackaging` (a matched
+ * PackagingWeightProfile takes priority over the line's own legacy
+ * `stemsPerBox`/`weightPerBoxKg`) rather than letting this function read the
+ * legacy `FarmOfferLine` columns directly - see the quote-pipeline
+ * consistency fix this parameter was introduced for.
+ */
+export interface ResolvedLinePackaging {
+  stemsPerBox: number | null;
+  weightPerBoxKg: string | null;
+}
+
 export async function priceLineForCustomer(
   line: FarmOfferLine,
   customer: Customer,
   incoterm: Incoterm,
   targetCurrency: CurrencyCode,
   marginPercent: string,
+  packaging: ResolvedLinePackaging,
   destinationIdOverride?: string | null,
   exchangeRateOverride?: string | null,
 ): Promise<LinePricingResult> {
@@ -259,9 +273,9 @@ export async function priceLineForCustomer(
     fobPricePerStem: line.fobPricePerStem?.toString() ?? undefined,
     sourceCurrency: line.currency,
     targetCurrency,
-    stemsPerBox: line.stemsPerBox ?? undefined,
+    stemsPerBox: packaging.stemsPerBox ?? undefined,
     marginPercent,
-    weightPerBoxKg: line.weightPerBoxKg?.toString() ?? undefined,
+    weightPerBoxKg: packaging.weightPerBoxKg ?? undefined,
     freightRatePerKg: context.freightRatePerKg ?? undefined,
     freightRateUnit: context.freightRateUnit ?? undefined,
     additionalCosts: context.additionalCosts,

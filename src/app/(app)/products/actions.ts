@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
+import { LineMatchStatus } from "@prisma/client";
 import {
   buildProfileUpdate,
   buildVariantUpdate,
@@ -121,13 +122,28 @@ export async function bulkDuplicateSupplierLinks(ids: string[]): Promise<BulkAct
 /**
  * Bulk-deletes the selected supplier links (assortment rows are leaf records,
  * so this is a real delete). Single deleteMany, no per-item request.
+ *
+ * Any `FarmOfferLine` still linked to one of these profiles is updated in
+ * the SAME transaction, before the delete: the database's own FK
+ * (`onDelete: SetNull`) already nulls `packagingWeightProfileId` once the row
+ * is gone, but it cannot also flip `matchStatus` back to UNMATCHED - a
+ * database trigger isn't used for this (deliberately; see the review-step
+ * report), so the application does it explicitly here (section 25).
+ * `productVariantId` is left untouched: it still points at the (still
+ * existing) `ProductVariant`, which stays semantically correct even once
+ * this specific packaging profile is gone - only the packaging-specific link
+ * disappears.
  */
 export async function bulkDeleteSupplierLinks(ids: string[]): Promise<BulkActionResult> {
   const validation = await validateBulkIds(ids);
   if ("error" in validation) return { ok: false, message: validation.error };
 
-  const res = await prisma.packagingWeightProfile.deleteMany({
-    where: { id: { in: validation.ids } },
+  const res = await prisma.$transaction(async (tx) => {
+    await tx.farmOfferLine.updateMany({
+      where: { packagingWeightProfileId: { in: validation.ids } },
+      data: { packagingWeightProfileId: null, matchStatus: LineMatchStatus.UNMATCHED },
+    });
+    return tx.packagingWeightProfile.deleteMany({ where: { id: { in: validation.ids } } });
   });
   revalidatePath("/products");
   return { ok: true, message: `${res.count} artikel(en) verwijderd.` };
@@ -466,9 +482,19 @@ export async function duplicateSupplierLink(id: string, formData: FormData): Pro
   revalidatePath("/weight-profiles");
 }
 
-/** Hard-deletes a single supplier link (assortment row is a leaf record). */
+/**
+ * Hard-deletes a single supplier link (assortment row is a leaf record).
+ * See `bulkDeleteSupplierLinks` for why linked `FarmOfferLine`s are updated
+ * to UNMATCHED in the same transaction, before the delete (section 25).
+ */
 export async function deleteSupplierLink(id: string): Promise<void> {
-  await prisma.packagingWeightProfile.delete({ where: { id } });
+  await prisma.$transaction(async (tx) => {
+    await tx.farmOfferLine.updateMany({
+      where: { packagingWeightProfileId: id },
+      data: { packagingWeightProfileId: null, matchStatus: LineMatchStatus.UNMATCHED },
+    });
+    await tx.packagingWeightProfile.delete({ where: { id } });
+  });
   revalidatePath("/products");
 }
 

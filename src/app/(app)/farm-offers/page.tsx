@@ -36,9 +36,14 @@ export default async function FarmOffersPage({
           <h1 className="text-2xl font-semibold text-gray-900">Leveranciersaanbiedingen</h1>
           <p className="text-sm text-gray-500 mt-1">Alle geüploade en handmatig ingevoerde aanbiedingen.</p>
         </div>
-        <Link href="/farm-offers/upload" className="btn-primary">
-          + Nieuwe aanbieding uploaden
-        </Link>
+        <div className="flex gap-3">
+          <Link href="/farm-offers/mappings" className="btn-secondary">
+            Supplier mappings beheren
+          </Link>
+          <Link href="/farm-offers/upload" className="btn-primary">
+            + Nieuwe aanbieding uploaden
+          </Link>
+        </div>
       </div>
 
       <form className="flex gap-3 items-end">
