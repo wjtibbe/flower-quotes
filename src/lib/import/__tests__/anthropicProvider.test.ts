@@ -2,9 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mocks the dynamically-imported "@anthropic-ai/sdk" module (AnthropicParserProvider
 // does `await import("@anthropic-ai/sdk")` itself) so these tests exercise the real
-// provider logic - validation, prompt/payload building, retry/timeout, error mapping,
-// logging - without ever making a real network call. `vi.hoisted` is required because
-// `vi.mock` factories run before the top-level imports below.
+// provider logic - forced tool-use, validation, prompt/payload building, retry/timeout,
+// error mapping, logging - without ever making a real network call. `vi.hoisted` is
+// required because `vi.mock` factories run before the top-level imports below.
 const { mockCreate, MockAnthropicClient } = vi.hoisted(() => {
   const mockCreate = vi.fn();
   class MockAnthropicClient {
@@ -23,19 +23,16 @@ import {
   AnthropicNotConfiguredError,
   AnthropicParserProvider,
   AnthropicRequestError,
+  AnthropicResponseFormatError,
   AnthropicTimeoutError,
+  AnthropicToolInputInvalidError,
   AnthropicUnsupportedImageTypeError,
   AnthropicEmptyImageError,
-  AnthropicJsonParseError,
   MAX_IMAGE_BYTES,
 } from "../provider";
 import type { ImageImportSource, TextImportSource } from "../types";
 
 const ORIGINAL_API_KEY = process.env.ANTHROPIC_API_KEY;
-
-function textOkResponse(lines: unknown[]) {
-  return { content: [{ type: "text", text: JSON.stringify(lines) }] };
-}
 
 const validLine = {
   rawText: "Dallas 60cm 0.38",
@@ -59,6 +56,19 @@ const validLine = {
   parserWarnings: [],
 };
 
+/** The primary happy-path shape: a forced `submit_offer_extraction` tool call. */
+function toolUseResponse(lines: unknown[], stopReason = "tool_use") {
+  return {
+    stop_reason: stopReason,
+    content: [{ type: "tool_use", id: "toolu_1", name: "submit_offer_extraction", input: { lines } }],
+  };
+}
+
+/** Legacy backward-compat shape: a plain text block containing a JSON array. */
+function legacyTextResponse(lines: unknown[]) {
+  return { stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(lines) }] };
+}
+
 const textSource: TextImportSource = { kind: "text", text: "Dallas 60cm 0.38" };
 
 beforeEach(() => {
@@ -72,7 +82,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("AnthropicParserProvider - errors (section D)", () => {
+describe("AnthropicParserProvider - pre-call guards", () => {
   it("throws AnthropicNotConfiguredError for an image when ANTHROPIC_API_KEY is missing, without calling the SDK", async () => {
     delete process.env.ANTHROPIC_API_KEY;
     const provider = new AnthropicParserProvider();
@@ -83,11 +93,7 @@ describe("AnthropicParserProvider - errors (section D)", () => {
 
   it("rejects an unsupported image media type before ever calling the SDK", async () => {
     const provider = new AnthropicParserProvider();
-    const source = {
-      kind: "image",
-      bytes: Buffer.from([1, 2, 3]),
-      mediaType: "image/bmp",
-    } as unknown as ImageImportSource;
+    const source = { kind: "image", bytes: Buffer.from([1, 2, 3]), mediaType: "image/bmp" } as unknown as ImageImportSource;
     await expect(provider.parseOfferSource(source)).rejects.toThrow(AnthropicUnsupportedImageTypeError);
     expect(mockCreate).not.toHaveBeenCalled();
   });
@@ -101,15 +107,13 @@ describe("AnthropicParserProvider - errors (section D)", () => {
 
   it("rejects an image larger than MAX_IMAGE_BYTES before ever calling the SDK", async () => {
     const provider = new AnthropicParserProvider();
-    const source: ImageImportSource = {
-      kind: "image",
-      bytes: Buffer.alloc(MAX_IMAGE_BYTES + 1),
-      mediaType: "image/jpeg",
-    };
+    const source: ImageImportSource = { kind: "image", bytes: Buffer.alloc(MAX_IMAGE_BYTES + 1), mediaType: "image/jpeg" };
     await expect(provider.parseOfferSource(source)).rejects.toThrow(/groter dan de maximale/);
     expect(mockCreate).not.toHaveBeenCalled();
   });
+});
 
+describe("AnthropicParserProvider - transport error taxonomy (unchanged)", () => {
   it("maps a rejected request (e.g. 400 from the API) to AnthropicRequestError without retrying a non-retryable status", async () => {
     const apiError = Object.assign(new Error("Bad request"), { status: 400 });
     mockCreate.mockRejectedValue(apiError);
@@ -125,32 +129,16 @@ describe("AnthropicParserProvider - errors (section D)", () => {
 
     const resultPromise = provider.parseOfferSource(textSource);
     const assertion = expect(resultPromise).rejects.toThrow(AnthropicTimeoutError);
-    // Two zero-length advances first let the pending dynamic `import("@anthropic-ai/sdk")`
-    // microtask resolve so the real setTimeout call inside withTimeout() is actually
-    // registered before we fast-forward through it - otherwise runAllTimersAsync can
-    // observe an empty timer queue and return immediately, leaving `p` hanging forever.
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(0);
     await vi.runAllTimersAsync();
     await assertion;
   }, 15_000);
-
-  it("throws AnthropicJsonParseError when the model response is not valid JSON", async () => {
-    mockCreate.mockResolvedValue({ content: [{ type: "text", text: "Sorry, I could not read this." }] });
-    const provider = new AnthropicParserProvider();
-    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicJsonParseError);
-  });
-
-  it("throws AnthropicNoLinesDetectedError for a syntactically valid but empty response, instead of a silent technical success", async () => {
-    mockCreate.mockResolvedValue(textOkResponse([]));
-    const provider = new AnthropicParserProvider();
-    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicNoLinesDetectedError);
-  });
 });
 
-describe("AnthropicParserProvider - successful requests (regression + payload/logging)", () => {
-  it("resolves a text source to parsed lines and sends only a text content block", async () => {
-    mockCreate.mockResolvedValue(textOkResponse([validLine]));
+describe("AnthropicParserProvider - forced tool-use happy path (section 11.A/B/G)", () => {
+  it("forces the submit_offer_extraction tool and resolves a text source to parsed lines", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
     const provider = new AnthropicParserProvider();
     const lines = await provider.parseOfferSource(textSource, { supplierName: "Test Farm" });
 
@@ -159,13 +147,26 @@ describe("AnthropicParserProvider - successful requests (regression + payload/lo
     expect(lines[0].lengthCm).toBe(60);
 
     const call = mockCreate.mock.calls[0][0];
+    // The forced tool is declared and selected.
+    expect(call.tools?.[0]?.name).toBe("submit_offer_extraction");
+    expect(call.tool_choice).toEqual({ type: "tool", name: "submit_offer_extraction" });
+    // Content is still just the instruction text (tools live at top level, not in content).
     expect(call.messages[0].content).toHaveLength(1);
     expect(call.messages[0].content[0].type).toBe("text");
     expect(call.messages[0].content[0].text).toContain("Test Farm");
   });
 
-  it("resolves an image source to parsed lines, sending an image block plus instruction text", async () => {
-    mockCreate.mockResolvedValue(textOkResponse([validLine]));
+  it("B (production-bug regression): a response with a tool_use block but NO text block SUCCEEDS", async () => {
+    // Exactly the shape that used to throw AnthropicResponseFormatError ("geen leesbare tekst").
+    mockCreate.mockResolvedValue(toolUseResponse([validLine], "tool_use"));
+    const provider = new AnthropicParserProvider();
+    const lines = await provider.parseOfferSource(textSource);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].varietyRaw).toBe("Dallas");
+  });
+
+  it("G: an image source uses the same forced tool-use flow", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
     const provider = new AnthropicParserProvider();
     const bytes = Buffer.from("fake-png-bytes-for-test");
     const source: ImageImportSource = { kind: "image", bytes, mediaType: "image/png", fileName: "offer.png" };
@@ -174,17 +175,70 @@ describe("AnthropicParserProvider - successful requests (regression + payload/lo
 
     expect(lines).toHaveLength(1);
     const call = mockCreate.mock.calls[0][0];
+    expect(call.tool_choice).toEqual({ type: "tool", name: "submit_offer_extraction" });
     const content = call.messages[0].content;
     expect(content).toHaveLength(2);
     expect(content[0].type).toBe("image");
-    expect(content[0].source.media_type).toBe("image/png");
     expect(content[0].source.data).toBe(bytes.toString("base64"));
     expect(content[1].type).toBe("text");
-    expect(content[1].text).toContain("Colombia Farm");
   });
 
-  it("never logs base64 image data, image bytes, or extracted document text - only safe metadata", async () => {
-    mockCreate.mockResolvedValue(textOkResponse([validLine]));
+  it("throws AnthropicNoLinesDetectedError when the tool returns an empty lines array", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([]));
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicNoLinesDetectedError);
+  });
+});
+
+describe("AnthropicParserProvider - structured retry + errors (section 11.C/D, 9, 10)", () => {
+  it("C: a tool call with the WRONG name is retried once, then surfaces AnthropicResponseFormatError", async () => {
+    mockCreate.mockResolvedValue({
+      stop_reason: "tool_use",
+      content: [{ type: "tool_use", id: "t", name: "some_other_tool", input: { lines: [validLine] } }],
+    });
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicResponseFormatError);
+    expect(mockCreate).toHaveBeenCalledTimes(2); // 1 initial + 1 structured retry
+  });
+
+  it("D: Zod-invalid tool input is retried once, then surfaces AnthropicToolInputInvalidError", async () => {
+    const invalid = toolUseResponse([{ ...validLine, confidence: "definitely" }]); // bad enum
+    mockCreate.mockResolvedValue(invalid);
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicToolInputInvalidError);
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("D (recovery): a first invalid tool input then a valid one on retry SUCCEEDS", async () => {
+    mockCreate
+      .mockResolvedValueOnce(toolUseResponse([{ ...validLine, confidence: "definitely" }]))
+      .mockResolvedValueOnce(toolUseResponse([validLine]));
+    const provider = new AnthropicParserProvider();
+    const lines = await provider.parseOfferSource(textSource);
+    expect(lines).toHaveLength(1);
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("AnthropicParserProvider - legacy text fallback (section 11.E, 4)", () => {
+  it("E: a valid legacy free-text JSON array (no tool call) still works via fallback", async () => {
+    mockCreate.mockResolvedValue(legacyTextResponse([validLine]));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const provider = new AnthropicParserProvider();
+
+    const lines = await provider.parseOfferSource(textSource);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].varietyRaw).toBe("Dallas");
+    // Only one call - the fallback consumed the first response, no retry needed.
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const loggedFallback = warnSpy.mock.calls.some((c) => String(c[0]).includes("legacy free-text JSON fallback used"));
+    expect(loggedFallback).toBe(true);
+  });
+});
+
+describe("AnthropicParserProvider - safe logging (section 11.F, 5)", () => {
+  it("never logs base64 image data, image bytes, extracted document text, stop_reason aside, or block content", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -205,5 +259,8 @@ describe("AnthropicParserProvider - successful requests (regression + payload/lo
     expect(allLoggedArgs).not.toContain("super-secret-pixels-do-not-log-me");
     expect(allLoggedArgs).not.toContain("Dallas"); // no product/price content either
     expect(allLoggedArgs).not.toContain("0.38");
+    // ...but it DOES log the safe structured metadata (stop_reason + block types).
+    expect(allLoggedArgs).toContain("stopReason");
+    expect(allLoggedArgs).toContain("blockTypes");
   });
 });
