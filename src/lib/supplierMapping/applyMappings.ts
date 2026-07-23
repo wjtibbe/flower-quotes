@@ -1,6 +1,7 @@
 import "server-only";
 import { prisma } from "@/lib/db";
 import { normalizeSupplierMappingSource } from "./normalize";
+import { hasLengthRange } from "@/lib/import/rangeExpansion";
 import { matchFarmOfferLine, type MatchFarmOfferLineInput } from "@/lib/import/matching/matchFarmOfferLine";
 import type { AssortmentCandidate, AssortmentMatchResult } from "@/lib/import/matching/assortmentMatch";
 
@@ -52,7 +53,14 @@ export async function applySupplierMappingsThenMatch(
   lines: MappableOfferLine[],
   candidates: AssortmentCandidate[],
 ): Promise<AppliedLineMatch[]> {
-  const normalizedSources = lines.map((line) => (line.rawText ? normalizeSupplierMappingSource(line.rawText) : null));
+  // A ranged source row ("2hb Alert 40-60cm") is never matched via a supplier
+  // mapping (defense in depth): it expands to several lengths/profiles and can
+  // never have been saved as a single one-source -> one-profile mapping (the
+  // save action refuses it), so it must fall straight through to the
+  // deterministic engine per concrete expanded length.
+  const normalizedSources = lines.map((line) =>
+    line.rawText && !hasLengthRange(line.rawText) ? normalizeSupplierMappingSource(line.rawText) : null,
+  );
   const uniqueSources = [...new Set(normalizedSources.filter((s): s is string => s !== null))];
 
   const mappings =

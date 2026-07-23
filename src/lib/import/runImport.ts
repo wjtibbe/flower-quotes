@@ -1,11 +1,13 @@
-import type { ImportContext, ImportResult, ParsedOfferLine, SourceFileKind } from "./types";
+import type { ImportContext, ImportParserProvider, ImportResult, ParsedOfferLine, SourceFileKind } from "./types";
 import { extractPdfText, isPdfTextUseful } from "./extract/pdfText";
 import { extractExcelTables } from "./extract/excelTable";
 import { extractCsvTables } from "./extract/csv";
 import { extractEmailText } from "./extract/emailText";
 import { resolveImageMediaType, resolveExcelFileKind } from "./extract/detectFileType";
 import { parseExcelTable } from "./excelParser";
-import { getImportParserProvider } from "./provider";
+import { getImportParserProvider, AnthropicNoLinesDetectedError } from "./provider";
+import { chunkTextSupplierOffer, type TextChunk } from "./textChunking";
+import { applyLengthRangeExpansion, parseSharedPriceTable } from "./rangeExpansion";
 
 // Human-readable description of each source kind, given to the parser
 // provider as part of its context (section 2: "de prompt moet ... document-
@@ -223,12 +225,89 @@ async function runImageImport(
 }
 
 /**
+ * One extraction batch failed hard (transport error, truncation, invalid tool
+ * input, ...). This fails the WHOLE import - no partial result is ever
+ * persisted - and names which part of a chunked list failed so the reviewer
+ * knows exactly where to look before retrying. Only used when the source was
+ * split into more than one batch; a single-batch failure surfaces the
+ * provider's own specific error unchanged.
+ */
+export class TextBatchExtractionError extends Error {
+  constructor(
+    readonly batchIndex: number,
+    readonly totalBatches: number,
+    readonly cause: unknown,
+  ) {
+    const causeMessage = cause instanceof Error ? cause.message : String(cause);
+    super(
+      `De AI kon deel ${batchIndex + 1} van ${totalBatches} van deze leverancierslijst niet verwerken. Probeer het opnieuw. (${causeMessage})`,
+    );
+    this.name = "TextBatchExtractionError";
+  }
+}
+
+/**
+ * Runs every chunk of a (possibly large) text source through the provider's
+ * existing forced-tool-use flow, sequentially, and concatenates the results in
+ * source order (section: durable chunked extraction). Failure policy:
+ *  - A batch that legitimately found NO lines contributes nothing but does not
+ *    fail its siblings - the caller's final empty-result check reports the
+ *    overall "no recognizable lines" case uniformly.
+ *  - Any real batch failure (transport, truncation, invalid tool input) throws
+ *    and fails the whole import; nothing partial is returned or persisted.
+ * Only safe metadata is logged (never the supplier text).
+ */
+async function extractTextInBatches(
+  provider: ImportParserProvider,
+  chunks: TextChunk[],
+  context: ImportContext,
+): Promise<ParsedOfferLine[]> {
+  const merged: ParsedOfferLine[] = [];
+  for (const chunk of chunks) {
+    let chunkLines: ParsedOfferLine[];
+    try {
+      chunkLines = await provider.parseOfferSource({ kind: "text", text: chunk.composedText }, context);
+    } catch (err) {
+      if (err instanceof AnthropicNoLinesDetectedError) {
+        // This batch found nothing - tolerate it and let the merged-empty
+        // check below decide the overall outcome. (For a single-batch import
+        // this reproduces the previous "zero lines -> fatalError" behavior.)
+        console.info("[import:chunking] batch found no lines", {
+          batchIndex: chunk.index,
+          totalBatches: chunks.length,
+          productRowCount: chunk.productRowCount,
+        });
+        continue;
+      }
+      if (chunks.length > 1) throw new TextBatchExtractionError(chunk.index, chunks.length, err);
+      throw err;
+    }
+    merged.push(...chunkLines);
+    console.info("[import:chunking] batch extracted", {
+      batchIndex: chunk.index,
+      totalBatches: chunks.length,
+      productRowCount: chunk.productRowCount,
+      outputLineCount: chunkLines.length,
+    });
+  }
+  return merged;
+}
+
+/**
  * Shared entry point for every plain-text source: an uploaded .eml/.txt file,
  * PDF-extracted text, the Excel/CSV flatten-to-text fallback, and pasted
  * WhatsApp/email text (via `runPastedTextImport` above) - all funnel through
- * here so there is exactly one place that builds a `TextImportSource`, calls
- * the provider factory, and interprets the result (section 3: "Voorkom
- * dubbele parserlogica").
+ * here so there is exactly one place that builds text batches, calls the
+ * provider factory, and interprets the result (section 3: "Voorkom dubbele
+ * parserlogica").
+ *
+ * Large lists are segmented into bounded batches (`chunkTextSupplierOffer`),
+ * each extracted through the provider's existing forced structured-tool-use
+ * flow and merged back in source order - so a 100+ row list no longer
+ * truncates a single over-large call. A shared "length range + price table"
+ * document is then expanded deterministically (`applyLengthRangeExpansion`),
+ * which is a no-op for any source without such a table. Small lists stay a
+ * single, byte-for-byte-unchanged call.
  */
 export async function runTextImportSource(
   raw: string,
@@ -238,17 +317,28 @@ export async function runTextImportSource(
 ): Promise<ImportResult> {
   const text = preprocess(raw);
   const provider = getImportParserProvider();
+  const chunks = chunkTextSupplierOffer(text);
+  const priceTable = parseSharedPriceTable(text);
+
+  console.info("[import:chunking] source segmented", {
+    sourceKind,
+    sourceBytes: Buffer.byteLength(text, "utf-8"),
+    chunkCount: chunks.length,
+    priceTierCount: priceTable.length,
+  });
+
   try {
-    const lines = await provider.parseOfferSource({ kind: "text", text }, context);
+    const merged = await extractTextInBatches(provider, chunks, context);
+    // Deterministic business rule: expand length-range rows across the shared
+    // price table (no-op when the document has no such table).
+    const lines = applyLengthRangeExpansion(merged, priceTable);
+
     if (lines.length === 0) {
       // A syntactically successful parse with zero recognized lines is not a
       // silent technical success (section 3: "Eén lege parseruitkomst moet
-      // een concrete fout geven, geen succesvol aanbod met nul regels"). The
-      // Anthropic provider already guards against this for its own responses
-      // (AnthropicNoLinesDetectedError), but the rule-based provider (used
-      // whenever ANTHROPIC_API_KEY isn't configured) has no such guard, so
-      // this check applies uniformly to every provider and every text-based
-      // source.
+      // een concrete fout geven, geen succesvol aanbod met nul regels"). This
+      // applies uniformly to every provider (the rule-based provider has no
+      // zero-lines guard of its own) and every text-based source.
       return {
         sourceKind,
         rawText: text,
@@ -257,12 +347,20 @@ export async function runTextImportSource(
           "Er zijn geen herkenbare aanbiedingsregels gevonden in deze tekst. Controleer de inhoud of voeg de regels handmatig toe.",
       };
     }
+
+    console.info("[import:chunking] import merged", {
+      sourceKind,
+      chunkCount: chunks.length,
+      mergedLineCount: merged.length,
+      finalLineCount: lines.length,
+    });
     return { sourceKind, rawText: text, lines };
   } catch (err) {
-    // A provider failure (AI unavailable, timeout, malformed JSON, ...) must
-    // never surface as a raw/generic exception - report it as a fatalError
-    // with the provider's specific reason so the reviewer can fall back to
-    // manual entry, exactly like the PDF/IMAGE extraction failures above.
+    // A provider/batch failure (AI unavailable, timeout, truncation, one batch
+    // failing, ...) must never surface as a raw/generic exception - report it
+    // as a fatalError with the specific reason so the reviewer can fall back
+    // to manual entry, exactly like the PDF/IMAGE extraction failures above.
+    // No partial lines are ever returned.
     return {
       sourceKind,
       rawText: text,

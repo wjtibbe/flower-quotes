@@ -149,6 +149,44 @@ describe("applySupplierMappingsThenMatch - section 28 apply + section 29 precede
     expect(results[0].packagingWeightProfileId).toBe("profile-B");
   });
 
+  it("section 28: a ranged source row is excluded from mapping lookup entirely and falls to the engine", async () => {
+    // A ranged rawText ("2hb Alert 40-60cm") was expanded across several
+    // lengths/profiles during import - it can never have been saved as a
+    // single one-source -> one-profile mapping, so it must be skipped even if
+    // a mapping row somehow exists. An all-ranged batch never queries at all.
+    mockFindMany.mockResolvedValue([mappingRow()]);
+    const candidates = [candidate({ packagingWeightProfileId: "profile-alert-40", variety: "Alert", stemLength: "40 cm" })];
+
+    const results = await applySupplierMappingsThenMatch(
+      FARM,
+      [{ rawText: "2hb Alert 40-60cm", productGroupRaw: "Rose", varietyRaw: "Alert", stemLengthCm: 40 }],
+      candidates,
+    );
+
+    expect(mockFindMany).not.toHaveBeenCalled();
+    expect(results[0].matchedViaMapping).toBe(false);
+  });
+
+  it("section 28: a ranged row is excluded even when normal (single-length) rows in the SAME batch still map", async () => {
+    mockFindMany.mockResolvedValue([mappingRow()]);
+    const candidates = [candidate()];
+
+    const results = await applySupplierMappingsThenMatch(
+      FARM,
+      [
+        { rawText: "2hb Alert 40-60cm", productGroupRaw: "Rose", varietyRaw: "Alert", stemLengthCm: 40 },
+        { rawText: "Dallas 60cm 0.38", productGroupRaw: "Rose", varietyRaw: "Dallas", stemLengthCm: 60 },
+      ],
+      candidates,
+    );
+
+    // Only the single-length row's normalized source is ever queried.
+    const queried = mockFindMany.mock.calls[0]?.[0]?.where?.normalizedSource?.in ?? [];
+    expect(queried).toHaveLength(1);
+    expect(results[0].matchedViaMapping).toBe(false); // ranged row: engine only
+    expect(results[1].matchedViaMapping).toBe(true); // single-length row: mapping applied
+  });
+
   it("a stale mapping whose target belongs to a different farm is never used (defense in depth)", async () => {
     mockFindMany.mockResolvedValue([mappingRow({ packagingWeightProfile: { farmId: "farm-other", productVariantId: "variant-mapped" } })]);
     const candidates = [candidate()];

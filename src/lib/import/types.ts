@@ -62,6 +62,17 @@ export interface ParsedOfferLine {
    * mapping helper add a validation warning.
    */
   lengthCm?: number;
+  /**
+   * The stem length EXACTLY as written in the source ("60cm", "40-60cm",
+   * "70-80 cm"), preserved verbatim so the deterministic range expander
+   * (`rangeExpansion.ts`) can tell a single length from a range without ever
+   * losing the original wording. For a single length this mirrors `lengthCm`;
+   * for a range `lengthCm` stays undefined and the range lives only here until
+   * expansion resolves it into one concrete `lengthCm` per shared price-table
+   * tier. Transient parser metadata - never persisted (there is no column for
+   * it); expansion runs before the offer lines are ever written.
+   */
+  lengthRaw?: string;
   boxType?: string;
   boxesAvailable?: number;
   stemsPerBox?: number;

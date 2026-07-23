@@ -11,7 +11,8 @@ import {
 } from "./types";
 import { segmentOfferLines } from "./segment";
 import { parseOfferLine } from "./lineParser";
-import { normalizeDecimalString, parseLengthCm } from "./normalize";
+import { normalizeDecimalString } from "./normalize";
+import { parseLengthSpec } from "./rangeExpansion";
 import { withRetry, withTimeout } from "./asyncUtils";
 
 /**
@@ -42,7 +43,14 @@ export class RuleBasedParserProvider implements ImportParserProvider {
 
 // Verified current and correct - do not change without an explicit request.
 const MODEL_ID = "claude-sonnet-5";
-const MAX_OUTPUT_TOKENS = 4096;
+// Output-token budget for ONE structured extraction call. At roughly ~320
+// output tokens per extracted line, 8192 comfortably covers a bounded batch of
+// ~20-25 product rows (see `textChunking.ts`) with headroom. This is NOT the
+// primary fix for large lists - chunking is; a single call is never asked to
+// emit an unbounded list. If a batch still overruns this budget the response
+// is truncated (`stop_reason: "max_tokens"`) and surfaces as a first-class
+// `AnthropicOutputTruncatedError`, never a misleading "lines: Required".
+const MAX_OUTPUT_TOKENS = 8192;
 // Our own timeout is authoritative (produces a specific, typed error); the
 // client-level timeout below is only a hard backstop in case Promise.race
 // somehow never settles, so it's set well above our own limit.
@@ -129,6 +137,25 @@ export class AnthropicToolInputInvalidError extends Error {
       `De AI leverde een gestructureerd resultaat op dat niet gevalideerd kon worden${detail ? ` (${detail})` : ""}. Probeer het opnieuw of voer de regels handmatig in.`,
     );
     this.name = "AnthropicToolInputInvalidError";
+  }
+}
+
+/**
+ * The model's response was cut off by the output-token limit
+ * (`stop_reason: "max_tokens"`), so its tool input is incomplete/empty. A
+ * first-class, distinct condition (section 27): it must NEVER be allowed to
+ * degrade into a generic `AnthropicToolInputInvalidError` ("lines: Required"),
+ * and it must NOT trigger a structured retry (a retry would just truncate
+ * again). For a text import this is normally impossible because the source is
+ * chunked into bounded batches first; if it still happens, one batch was
+ * pathologically large and the reviewer is told so specifically.
+ */
+export class AnthropicOutputTruncatedError extends Error {
+  constructor() {
+    super(
+      "De AI-respons werd afgekapt omdat dit deel van de lijst te groot was om in één keer te verwerken. Probeer het opnieuw of splits de lijst in kleinere stukken.",
+    );
+    this.name = "AnthropicOutputTruncatedError";
   }
 }
 
@@ -277,9 +304,30 @@ Rules specific to reading pasted correspondence:
 - Leave a field null when it is missing rather than guessing it - never guess a price, quantity, currency or packaging value.
 - Add a concrete parserWarning whenever something is ambiguous (e.g. a shared value whose scope is unclear, or a line that could be read two ways).`;
 
+// Instructions for two things that only matter for text sources: the optional
+// section delimiters a large list is split into (see `textChunking.ts`), and
+// the "length range + shared price table" document pattern. Both are inert for
+// a document that has neither, so this block is safe to include on every text
+// import. The model must NEVER expand a range or read a price out of the table
+// itself - that is done deterministically afterward (`rangeExpansion.ts`) so it
+// stays exact and auditable.
+const TEXT_STRUCTURE_INSTRUCTIONS = `Reading a structured or large source:
+
+Some sources are pre-organized into clearly labeled sections. When you see these exact labels, obey them strictly:
+- A "DOCUMENT CONTEXT" section holds background only - a greeting, the farm name, or a section heading such as "ROSES". NEVER emit an offer line for anything inside it.
+- A "BATCH PRODUCT ROWS" section is the ONLY place you extract offer lines from. Extract every product row it contains.
+- A "SHARED COMMERCIAL CONTEXT" section holds a shared price table: each line maps ONE length to ONE price (e.g. "40 cm 0.16"). This is pricing context, never a product. NEVER emit an offer line for a price-table row.
+If the source has none of these labels, read the whole text exactly as instructed above.
+
+Length ranges and shared price tables (applies with or without the labels):
+- A price-table line - a line that only maps a single length to a price, e.g. "40 cm 0.16" - is CONTEXT, never an offer line. Never turn one into a product.
+- When a product row states a length RANGE (e.g. "40-60cm", "70-80 cm"), copy the range VERBATIM into "length" (e.g. "40-60cm"). Do NOT expand it into multiple lines yourself, and do NOT pick a single number out of it.
+- When a product row's price is only given by a shared price table (there is no explicit per-stem price on the row itself), leave fobPricePerStem null. Do not copy a number out of the price table onto the row yourself - the price for each length is resolved afterward.`;
+
 function buildSystemPrompt(sourceKind: ImportSource["kind"], context?: ImportContext): string {
   const parts = [SYSTEM_PERSONA, EXTRACTION_INSTRUCTIONS, JSON_SCHEMA_TEXT, FLOWER_DOMAIN_GLOSSARY, PARSING_RULES];
   if (sourceKind === "image") parts.push(IMAGE_READING_INSTRUCTIONS);
+  if (sourceKind === "text") parts.push(TEXT_STRUCTURE_INSTRUCTIONS);
   if (sourceKind === "text" && context?.isPastedCorrespondence) parts.push(PASTED_TEXT_INSTRUCTIONS);
   return parts.join("\n\n");
 }
@@ -598,6 +646,21 @@ export class AnthropicParserProvider implements ImportParserProvider {
         blockTypes: response.content.map((b) => b.type),
       });
 
+      // Truncation is a first-class condition (section 27): the response was
+      // cut off by the token limit, so its tool input is incomplete. Fail
+      // immediately with a specific error - never retry (it would truncate
+      // again) and never let it fall through to the "invalid tool input"
+      // ("lines: Required") path below.
+      if (response.stop_reason === "max_tokens") {
+        console.error("[import:anthropic] response truncated at max_tokens", {
+          ...logMeta,
+          durationMs: Date.now() - startedAt,
+          inputSizeBytes,
+          maxTokens: MAX_OUTPUT_TOKENS,
+        });
+        throw new AnthropicOutputTruncatedError();
+      }
+
       const extracted = extractLinesFromToolUse(response);
       if (extracted.ok) {
         lines = extracted.lines;
@@ -768,9 +831,15 @@ function mapValidatedLine(parsed: ModelLine): ParsedOfferLine {
   const warnings = [...parsed.parserWarnings];
 
   // Length is ALWAYS kept as its own typed value - never appended to variety
-  // (see the correction note on ParsedOfferLine.lengthCm).
-  const lengthCm = parsed.length ? parseLengthCm(parsed.length) : null;
-  if (parsed.length && lengthCm === null) {
+  // (see the correction note on ParsedOfferLine.lengthCm). A RANGE ("40-60cm")
+  // is deliberately NOT collapsed into a single number here: `lengthCm` stays
+  // null and the original wording is preserved in `lengthRaw` so the
+  // deterministic range expander (`rangeExpansion.ts`) can resolve it into one
+  // concrete length per shared price-table tier afterward.
+  const lengthSpec = parseLengthSpec(parsed.length);
+  const lengthCm = lengthSpec.kind === "single" ? lengthSpec.cm : null;
+  const lengthRaw = parsed.length ?? undefined;
+  if (parsed.length && lengthSpec.kind === "none") {
     warnings.push(`Lengte "${parsed.length}" kon niet worden geïnterpreteerd - controleer handmatig.`);
   }
 
@@ -808,6 +877,7 @@ function mapValidatedLine(parsed: ModelLine): ParsedOfferLine {
     productGroupRaw: parsed.productGroup ?? undefined,
     varietyRaw: parsed.variety ?? undefined,
     lengthCm: lengthCm ?? undefined,
+    lengthRaw,
     colorRaw: parsed.color ?? undefined,
     gradeRaw: parsed.grade ?? undefined,
     treatmentRaw: parsed.treatment ?? "normal",
@@ -835,7 +905,9 @@ function mapValidatedLine(parsed: ModelLine): ParsedOfferLine {
 function buildDegradedLine(item: unknown, issues: z.ZodIssue[]): ParsedOfferLine {
   const obj = (typeof item === "object" && item !== null ? item : {}) as Record<string, unknown>;
   const issueSummary = issues.slice(0, 5).map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`);
-  const lengthCm = typeof obj.length === "string" ? parseLengthCm(obj.length) ?? undefined : undefined;
+  const lengthRaw = typeof obj.length === "string" ? obj.length : undefined;
+  const lengthSpec = parseLengthSpec(lengthRaw);
+  const lengthCm = lengthSpec.kind === "single" ? lengthSpec.cm : undefined;
 
   return {
     rawText:

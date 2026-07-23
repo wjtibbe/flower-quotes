@@ -3,6 +3,7 @@ import type { OfferUnitLike } from "@/lib/import";
 import { matchFarmOfferLine } from "@/lib/import/matching/matchFarmOfferLine";
 import type { AssortmentCandidate, AssortmentMatchOption } from "@/lib/import/matching/assortmentMatch";
 import { isValidSupplierMappingSource } from "@/lib/supplierMapping/mappingSource";
+import { hasLengthRange } from "@/lib/import/rangeExpansion";
 import type { OfferLineViewModel } from "./ReviewOfferClient";
 
 export function toAssortmentOption(candidate: AssortmentCandidate): AssortmentMatchOption {
@@ -129,10 +130,17 @@ export function buildOfferLineViewModel(
 
   // Section 4/7: a mapping can only be saved from a rawText the supplier
   // actually wrote (never empty/whitespace or an internal placeholder), for
-  // a line that already has a confirmed assortment link. Uses the exact same
-  // guard the authoritative server action does, so UI and server never disagree.
+  // a line that already has a confirmed assortment link. A ranged source row
+  // ("2hb Alert 40-60cm") is additionally excluded: it was expanded across
+  // several lengths (and therefore several packaging/weight profiles), so it
+  // cannot be represented by the current one-source -> one-profile mapping key
+  // without silently mapping the whole range to a single length. Uses the
+  // exact same guards the authoritative server action does, so UI and server
+  // never disagree.
   const canSaveAsSupplierMapping =
-    isValidSupplierMappingSource(line.rawText) && Boolean(line.packagingWeightProfileId);
+    isValidSupplierMappingSource(line.rawText) &&
+    !hasLengthRange(line.rawText) &&
+    Boolean(line.packagingWeightProfileId);
 
   return {
     id: line.id,

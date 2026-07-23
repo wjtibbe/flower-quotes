@@ -26,6 +26,7 @@ import {
   AnthropicResponseFormatError,
   AnthropicTimeoutError,
   AnthropicToolInputInvalidError,
+  AnthropicOutputTruncatedError,
   AnthropicUnsupportedImageTypeError,
   AnthropicEmptyImageError,
   MAX_IMAGE_BYTES,
@@ -217,6 +218,49 @@ describe("AnthropicParserProvider - structured retry + errors (section 11.C/D, 9
     const lines = await provider.parseOfferSource(textSource);
     expect(lines).toHaveLength(1);
     expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("AnthropicParserProvider - output truncation is first-class (section 27)", () => {
+  it("stop_reason 'max_tokens' throws AnthropicOutputTruncatedError immediately, with NO retry", async () => {
+    // A truncated response: the tool input is empty because the model was cut
+    // off. This must NOT become "lines: Required" and must NOT be retried.
+    mockCreate.mockResolvedValue({
+      stop_reason: "max_tokens",
+      content: [{ type: "tool_use", id: "t", name: "submit_offer_extraction", input: {} }],
+    });
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicOutputTruncatedError);
+    // Truncation is terminal - retrying would just truncate again.
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("a truncated response never degrades into AnthropicToolInputInvalidError", async () => {
+    mockCreate.mockResolvedValue({
+      stop_reason: "max_tokens",
+      content: [{ type: "tool_use", id: "t", name: "submit_offer_extraction", input: {} }],
+    });
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.not.toThrow(AnthropicToolInputInvalidError);
+  });
+});
+
+describe("AnthropicParserProvider - length range preservation", () => {
+  it("keeps a length RANGE as lengthRaw and does NOT collapse it into lengthCm", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([{ ...validLine, length: "40-60cm", fobPricePerStem: null }]));
+    const provider = new AnthropicParserProvider();
+    const lines = await provider.parseOfferSource(textSource);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].lengthRaw).toBe("40-60cm");
+    expect(lines[0].lengthCm).toBeUndefined();
+  });
+
+  it("a single length still populates lengthCm (and lengthRaw mirrors it)", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([{ ...validLine, length: "60cm" }]));
+    const provider = new AnthropicParserProvider();
+    const lines = await provider.parseOfferSource(textSource);
+    expect(lines[0].lengthCm).toBe(60);
+    expect(lines[0].lengthRaw).toBe("60cm");
   });
 });
 

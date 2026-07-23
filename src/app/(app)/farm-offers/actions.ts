@@ -30,6 +30,7 @@ import { findOrCreatePackagingWeightProfile } from "@/lib/import/matching/assort
 import { applySupplierMappingsThenMatch } from "@/lib/supplierMapping/applyMappings";
 import { normalizeSupplierMappingSource } from "@/lib/supplierMapping/normalize";
 import { isValidSupplierMappingSource } from "@/lib/supplierMapping/mappingSource";
+import { hasLengthRange } from "@/lib/import/rangeExpansion";
 import { isPackagingProfileValidForSupplier } from "@/lib/import/offerLineValidation";
 import {
   ConfidenceLevel,
@@ -556,6 +557,19 @@ export async function saveSupplierLineMapping(lineId: string): Promise<ActionRes
   // mapping only makes sense keyed on text the supplier actually wrote.
   if (!isValidSupplierMappingSource(line.rawText)) {
     return { ok: false, message: "Deze regel heeft geen bruikbare originele brontekst - er kan geen mapping worden opgeslagen." };
+  }
+  // A ranged source row ("2hb Alert 40-60cm") was expanded across several
+  // lengths - and therefore several packaging/weight profiles - during import.
+  // The mapping key is one normalized source -> one profile, so saving this
+  // row's mapping would silently bind the WHOLE range to a single length's
+  // profile. Until the mapping model can represent one source -> many targets,
+  // this is refused outright rather than saved incorrectly.
+  if (hasLengthRange(line.rawText)) {
+    return {
+      ok: false,
+      message:
+        "Deze regel bevat een lengterange (bv. \"40-60cm\") en is over meerdere lengtes uitgesplitst. Zo'n regel kan (nog) niet als leverancier-mapping worden opgeslagen.",
+    };
   }
   if (!line.packagingWeightProfileId || !line.packagingWeightProfile) {
     return { ok: false, message: "Deze regel heeft nog geen gekoppeld assortimentartikel." };

@@ -156,6 +156,18 @@ describe("buildOfferLineViewModel - section 33 supplier-mapping review UI fields
     expect(vm.canSaveAsSupplierMapping).toBe(false);
   });
 
+  it("section 28: canSaveAsSupplierMapping is false for a ranged source row (expanded across lengths/profiles)", () => {
+    const line = baseLine({ matchStatus: "AUTO_MATCHED", rawText: "2hb Alert 40-60cm" });
+    const vm = buildOfferLineViewModel(line, FARM, [candidate()]);
+    expect(vm.canSaveAsSupplierMapping).toBe(false);
+  });
+
+  it("section 28: canSaveAsSupplierMapping stays true for a single-length row (no range)", () => {
+    const line = baseLine({ matchStatus: "AUTO_MATCHED", rawText: "1qb be sweet 80cm" });
+    const vm = buildOfferLineViewModel(line, FARM, [candidate()]);
+    expect(vm.canSaveAsSupplierMapping).toBe(true);
+  });
+
   it("matchedViaSupplierMapping is true when a USER_LINKED line's profile matches the mapping for its source", () => {
     const line = baseLine({ matchStatus: "USER_LINKED", packagingWeightProfileId: "profile-1" });
     const vm = buildOfferLineViewModel(line, FARM, [candidate({ packagingWeightProfileId: "profile-1" })], "profile-1");
