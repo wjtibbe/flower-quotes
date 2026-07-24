@@ -531,9 +531,36 @@ export const OFFER_EXTRACTION_TOOL: Anthropic.Tool = {
 export const OFFER_LINE_JSON_SCHEMA_KEYS = Object.keys(OFFER_LINE_JSON_SCHEMA_PROPERTIES);
 
 export type StructuredExtractionResult =
-  | { ok: true; lines: ParsedOfferLine[] }
+  | { ok: true; lines: ParsedOfferLine[]; recovered?: boolean }
   | { ok: false; reason: "no_tool_use"; stopReason: string | null; blockTypes: string[] }
   | { ok: false; reason: "invalid_tool_input"; detail: string };
+
+/**
+ * Conservative recovery for exactly one known malformed shape (Production
+ * bug: "lines: Expected array, received string") - the model occasionally
+ * returns `tool_use.input.lines` as a JSON-*stringified* array instead of an
+ * actual array, despite the tool's own `input_schema` declaring it as an
+ * array. This is NOT a new output contract and never coercively parses any
+ * other field: it only fires when `input` is a plain object whose `lines`
+ * property is a string that itself parses as JSON into an array. Anything
+ * else (invalid JSON, a parsed non-array value, `lines` already an array,
+ * `input` not an object) returns null so the caller falls through to the
+ * normal invalid-tool-input path (structured retry, then a typed error) -
+ * "do not guess".
+ */
+function recoverStringifiedLines(input: unknown): Record<string, unknown> | null {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.lines !== "string") return null;
+  let parsedLines: unknown;
+  try {
+    parsedLines = JSON.parse(obj.lines);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsedLines)) return null;
+  return { ...obj, lines: parsedLines };
+}
 
 /**
  * Pure extraction of offer lines from an Anthropic Messages response,
@@ -544,7 +571,12 @@ export type StructuredExtractionResult =
  * Flow: find the `submit_offer_extraction` tool_use block -> validate its
  * `input` with the SAME Zod schema -> map to `ParsedOfferLine[]`. A response
  * without that tool call, or with tool input that fails Zod, returns a typed
- * failure the caller decides how to retry/surface.
+ * failure the caller decides how to retry/surface. If the initial Zod
+ * validation fails specifically because `lines` arrived as a JSON-stringified
+ * array, one conservative recovery attempt re-validates the parsed array
+ * through the SAME strict `ToolInputSchema` (`recovered: true` on success) -
+ * never a weaker/alternate schema. Still pure - never logs (the caller has
+ * the safe metadata - source kind, chunk/batch index - to log with).
  */
 export function extractLinesFromToolUse(response: {
   stop_reason?: string | null;
@@ -558,14 +590,31 @@ export function extractLinesFromToolUse(response: {
     return { ok: false, reason: "no_tool_use", stopReason: response.stop_reason ?? null, blockTypes };
   }
   const parsed = ToolInputSchema.safeParse(toolBlock.input);
-  if (!parsed.success) {
-    const detail = parsed.error.issues
+  if (parsed.success) {
+    return { ok: true, lines: parsed.data.lines.map(mapValidatedLine) };
+  }
+
+  const recoveredInput = recoverStringifiedLines(toolBlock.input);
+  if (recoveredInput) {
+    const recoveredParsed = ToolInputSchema.safeParse(recoveredInput);
+    if (recoveredParsed.success) {
+      return { ok: true, lines: recoveredParsed.data.lines.map(mapValidatedLine), recovered: true };
+    }
+    // The recovered array itself still fails the strict per-line schema
+    // (e.g. a line object violates ModelLineSchema) - report THAT detail,
+    // never silently fall back to the original "expected array" error.
+    const detail = recoveredParsed.error.issues
       .slice(0, 5)
       .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("; ");
     return { ok: false, reason: "invalid_tool_input", detail };
   }
-  return { ok: true, lines: parsed.data.lines.map(mapValidatedLine) };
+
+  const detail = parsed.error.issues
+    .slice(0, 5)
+    .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
+    .join("; ");
+  return { ok: false, reason: "invalid_tool_input", detail };
 }
 
 export class AnthropicParserProvider implements ImportParserProvider {
@@ -674,6 +723,13 @@ export class AnthropicParserProvider implements ImportParserProvider {
       const extracted = extractLinesFromToolUse(response);
       if (extracted.ok) {
         lines = extracted.lines;
+        if (extracted.recovered) {
+          // Safe metadata only (section 6) - never the recovered line content.
+          console.warn("[import:anthropic] recovered stringified tool lines", {
+            ...logMeta,
+            lineCount: extracted.lines.length,
+          });
+        }
         break;
       }
 

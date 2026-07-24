@@ -109,6 +109,73 @@ describe("extractLinesFromToolUse - pure structured-output parsing", () => {
   });
 });
 
+describe("extractLinesFromToolUse - stringified lines recovery (Production bug: 'lines: Expected array, received string')", () => {
+  it("A: a normal array `lines` needs no recovery - unaffected happy path", () => {
+    const r = extractLinesFromToolUse({ stop_reason: "tool_use", content: [toolBlock({ lines: [validLine] })] });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.lines).toHaveLength(1);
+      expect(r.recovered).toBeUndefined();
+    }
+  });
+
+  it("B: lines as a JSON-stringified valid array is recovered and succeeds", () => {
+    const r = extractLinesFromToolUse({
+      stop_reason: "tool_use",
+      content: [toolBlock({ lines: JSON.stringify([validLine, { ...validLine, variety: "Freedom" }]) })],
+    });
+    expect(r.ok).toBe(true);
+    if (r.ok) {
+      expect(r.recovered).toBe(true);
+      expect(r.lines).toHaveLength(2);
+      expect(r.lines[0].varietyRaw).toBe("Dallas");
+      expect(r.lines[1].varietyRaw).toBe("Freedom");
+    }
+  });
+
+  it("C: lines as a string containing invalid JSON is not recovered - falls through to invalid_tool_input", () => {
+    const r = extractLinesFromToolUse({
+      stop_reason: "tool_use",
+      content: [toolBlock({ lines: "not valid json [" })],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid_tool_input");
+  });
+
+  it("D: lines as a string that parses to an OBJECT (not an array) is rejected, never guessed", () => {
+    const r = extractLinesFromToolUse({
+      stop_reason: "tool_use",
+      content: [toolBlock({ lines: JSON.stringify({ notAnArray: true }) })],
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid_tool_input");
+  });
+
+  it("E: a recovered array whose line objects still violate ModelLineSchema fails validation (not silently accepted)", () => {
+    const r = extractLinesFromToolUse({
+      stop_reason: "tool_use",
+      content: [toolBlock({ lines: JSON.stringify([{ ...validLine, boxType: "XL" }]) })], // invalid enum
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.reason).toBe("invalid_tool_input");
+      if (r.reason === "invalid_tool_input") expect(r.detail).toMatch(/boxType/);
+    }
+  });
+
+  it("does not attempt recovery when `input` itself is not a plain object (e.g. an array)", () => {
+    const r = extractLinesFromToolUse({ stop_reason: "tool_use", content: [toolBlock([validLine])] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid_tool_input");
+  });
+
+  it("does not attempt recovery when `lines` is missing entirely (still the plain invalid path)", () => {
+    const r = extractLinesFromToolUse({ stop_reason: "tool_use", content: [toolBlock({ notLines: [] })] });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invalid_tool_input");
+  });
+});
+
 describe("tool schema <-> Zod schema drift guard", () => {
   it("the tool input_schema line keys exactly match ModelLineSchema (single source of truth)", () => {
     const zodKeys = Object.keys(ModelLineSchema.shape).sort();

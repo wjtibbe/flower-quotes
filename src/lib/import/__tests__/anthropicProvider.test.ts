@@ -264,6 +264,63 @@ describe("AnthropicParserProvider - length range preservation", () => {
   });
 });
 
+describe("AnthropicParserProvider - stringified tool lines recovery ('lines: Expected array, received string')", () => {
+  it("recovers when tool_use.input.lines arrives as a JSON-stringified array, and logs the recovery with safe metadata only", async () => {
+    mockCreate.mockResolvedValue({
+      stop_reason: "tool_use",
+      content: [
+        { type: "tool_use", id: "toolu_1", name: "submit_offer_extraction", input: { lines: JSON.stringify([validLine]) } },
+      ],
+    });
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const provider = new AnthropicParserProvider();
+
+    const lines = await provider.parseOfferSource(textSource);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].varietyRaw).toBe("Dallas");
+    // No retry needed - recovered on the first attempt.
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+
+    const loggedRecovery = warnSpy.mock.calls.some((c) => String(c[0]).includes("recovered stringified tool lines"));
+    expect(loggedRecovery).toBe(true);
+
+    // F: no supplier text/line content anywhere in the logs - metadata only.
+    const allLoggedArgs = [...infoSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
+      .flat()
+      .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
+      .join("\n");
+    expect(allLoggedArgs).not.toContain("Dallas");
+    expect(allLoggedArgs).not.toContain("0.38");
+    expect(allLoggedArgs).toContain("lineCount");
+  });
+
+  it("G: the normal array `lines` happy path is completely unaffected (no recovery, no extra log)", async () => {
+    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const provider = new AnthropicParserProvider();
+
+    const lines = await provider.parseOfferSource(textSource);
+
+    expect(lines).toHaveLength(1);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const loggedRecovery = warnSpy.mock.calls.some((c) => String(c[0]).includes("recovered stringified tool lines"));
+    expect(loggedRecovery).toBe(false);
+  });
+
+  it("a string that parses to invalid JSON is not recovered - retries once, then surfaces AnthropicToolInputInvalidError", async () => {
+    mockCreate.mockResolvedValue({
+      stop_reason: "tool_use",
+      content: [{ type: "tool_use", id: "toolu_1", name: "submit_offer_extraction", input: { lines: "not json [" } }],
+    });
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicToolInputInvalidError);
+    expect(mockCreate).toHaveBeenCalledTimes(2); // 1 initial + 1 structured retry
+  });
+});
+
 describe("AnthropicParserProvider - legacy text fallback (section 11.E, 4)", () => {
   it("E: a valid legacy free-text JSON array (no tool call) still works via fallback", async () => {
     mockCreate.mockResolvedValue(legacyTextResponse([validLine]));
