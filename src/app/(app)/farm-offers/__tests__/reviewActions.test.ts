@@ -601,6 +601,47 @@ describe("confirmFarmOffer - finalization validation", () => {
     const result = await confirmFarmOffer("offer-1");
     expect(result.ok).toBe(true);
   });
+
+  // G/H (streamline-reviewed-workflow fix): the client only ever navigates to
+  // the reviewed detail page (/farm-offers/[id]) when this action resolves
+  // {ok:true} - it stays on the review page and shows the message otherwise.
+  // These two tests pin down that contract at the server-action boundary
+  // (the actual client-side router.push/stay-put branching lives in
+  // ReviewOfferClient.tsx and is exercised by its own component logic, which
+  // this repo has no DOM-rendering test harness for - see the PR/report).
+  it("G: a successful confirmation resolves {ok:true} - the client's sole redirect signal", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue(offerWithLines([validLine]));
+    const result = await confirmFarmOffer("offer-1");
+    expect(result.ok).toBe(true);
+  });
+
+  it("H: a blocked confirmation resolves {ok:false} without ever updating the offer status - the client never navigates away", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue(offerWithLines([{ ...validLine, currency: "" }]));
+    const result = await confirmFarmOffer("offer-1");
+    expect(result.ok).toBe(false);
+    expect(mockFarmOfferUpdate).not.toHaveBeenCalled();
+  });
+
+  // Task 4 (hanging confirm): confirmFarmOffer used to have NO try/catch
+  // around its database calls, so a thrown error (a transient DB failure,
+  // here simulated) propagated uncaught instead of resolving to an
+  // ActionResult - the exact condition that left the client's pending state
+  // stuck with no feedback. It must now always resolve.
+  it("a database failure while reading the offer resolves {ok:false} instead of throwing (never hangs the caller)", async () => {
+    mockFarmOfferFindUnique.mockRejectedValue(new Error("connection reset"));
+    await expect(confirmFarmOffer("offer-1")).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+    expect(mockFarmOfferUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a database failure while writing the REVIEWED status resolves {ok:false} instead of throwing", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue(offerWithLines([validLine]));
+    mockFarmOfferUpdate.mockRejectedValueOnce(new Error("connection reset"));
+    await expect(confirmFarmOffer("offer-1")).resolves.toEqual(
+      expect.objectContaining({ ok: false }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

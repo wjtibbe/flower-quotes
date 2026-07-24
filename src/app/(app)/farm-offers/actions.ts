@@ -1001,42 +1001,61 @@ export async function bulkDeleteFarmOffers(ids: string[]): Promise<ActionResult>
  * price, currency or unit) - never trusts the client's own read of whether
  * the offer looks ready. Uses the same `FarmOfferStatus.REVIEWED` status as
  * before (section 17: no new enum needed).
+ *
+ * Root cause of "Confirm offer sometimes hangs" (streamline-reviewed-workflow
+ * fix): unlike every sibling action in this file, this function had NO
+ * try/catch around its database calls - a transient DB error (or a session
+ * lookup failure via `requireUserId`) threw uncaught, so the client's
+ * `await confirmFarmOffer(...)` promise rejected instead of resolving to an
+ * `ActionResult`. Inside a React `startTransition` callback that leaves
+ * `isPending` never reliably flipped back to `false` and shows the user
+ * nothing - it just looks like the button hung forever. Wrapping the whole
+ * body guarantees this always resolves to a normal `{ok:false, message}` the
+ * client can display and recover from, exactly like every other action here.
  */
 export async function confirmFarmOffer(offerId: string): Promise<ActionResult> {
+  // requireUserId() intentionally stays outside the try/catch, matching every
+  // other action in this file - an invalid/expired session is a hard auth
+  // failure the app-level error boundary should handle, never disguised as a
+  // soft "something went wrong" inline message.
   await requireUserId();
-  const offer = await prisma.farmOffer.findUnique({ where: { id: offerId }, include: { lines: true } });
-  if (!offer) return { ok: false, message: "Deze leveranciersaanbieding bestaat niet meer. Ververs de pagina." };
-  if (offer.lines.length === 0) {
-    return { ok: false, message: "Deze aanbieding heeft nog geen regels. Voeg eerst regels toe." };
+  try {
+    const offer = await prisma.farmOffer.findUnique({ where: { id: offerId }, include: { lines: true } });
+    if (!offer) return { ok: false, message: "Deze leveranciersaanbieding bestaat niet meer. Ververs de pagina." };
+    if (offer.lines.length === 0) {
+      return { ok: false, message: "Deze aanbieding heeft nog geen regels. Voeg eerst regels toe." };
+    }
+
+    const linesWithErrors = offer.lines.filter(
+      (line) =>
+        validateOfferLineForFinalization({
+          packagingWeightProfileId: line.packagingWeightProfileId,
+          productGroupRaw: line.productGroupRaw,
+          varietyRaw: line.varietyRaw,
+          fobPricePerStem: line.fobPricePerStem?.toString() ?? null,
+          currency: line.currency,
+          unit: line.unit as OfferUnitLike | null,
+          stemLengthCm: line.stemLengthCm,
+          quantity: line.quantity?.toString() ?? null,
+          totalStems: line.totalStems,
+        }).errors.length > 0,
+    ).length;
+
+    if (linesWithErrors > 0) {
+      return {
+        ok: false,
+        message: `Kan niet bevestigen: ${linesWithErrors} regel(s) hebben nog blokkerende fouten die eerst opgelost moeten worden.`,
+      };
+    }
+
+    await prisma.farmOffer.update({ where: { id: offerId }, data: { status: FarmOfferStatus.REVIEWED } });
+    revalidatePath(`/farm-offers/${offerId}/review`);
+    revalidatePath(`/farm-offers/${offerId}`);
+    revalidatePath("/farm-offers");
+    return { ok: true, message: "Aanbieding bevestigd als gecontroleerd." };
+  } catch {
+    return { ok: false, message: "Bevestigen is mislukt door een databasefout. Probeer het opnieuw." };
   }
-
-  const linesWithErrors = offer.lines.filter(
-    (line) =>
-      validateOfferLineForFinalization({
-        packagingWeightProfileId: line.packagingWeightProfileId,
-        productGroupRaw: line.productGroupRaw,
-        varietyRaw: line.varietyRaw,
-        fobPricePerStem: line.fobPricePerStem?.toString() ?? null,
-        currency: line.currency,
-        unit: line.unit as OfferUnitLike | null,
-        stemLengthCm: line.stemLengthCm,
-        quantity: line.quantity?.toString() ?? null,
-        totalStems: line.totalStems,
-      }).errors.length > 0,
-  ).length;
-
-  if (linesWithErrors > 0) {
-    return {
-      ok: false,
-      message: `Kan niet bevestigen: ${linesWithErrors} regel(s) hebben nog blokkerende fouten die eerst opgelost moeten worden.`,
-    };
-  }
-
-  await prisma.farmOffer.update({ where: { id: offerId }, data: { status: FarmOfferStatus.REVIEWED } });
-  revalidatePath(`/farm-offers/${offerId}/review`);
-  revalidatePath(`/farm-offers/${offerId}`);
-  revalidatePath("/farm-offers");
-  return { ok: true, message: "Aanbieding bevestigd als gecontroleerd." };
 }
 
 function emptyToNull(v: FormDataEntryValue | null): string | null {

@@ -80,6 +80,11 @@ export function ReviewOfferClient({
   const [modal, setModal] = useState<ModalState>(null);
   const [toast, setToast] = useState<ActionResult | null>(null);
   const [isPending, startTransition] = useTransition();
+  // Set synchronously on click, BEFORE startTransition - `isPending` from
+  // useTransition only becomes true once React commits the update, which can
+  // lag behind a rapid double-click; this flag closes that gap so the button
+  // is guaranteed disabled on the very next render, not just eventually.
+  const [confirming, setConfirming] = useState(false);
 
   const summary = useMemo(() => {
     let ready = 0;
@@ -107,6 +112,40 @@ export function ReviewOfferClient({
         onSuccess?.();
         router.refresh();
       }
+    });
+  }
+
+  /**
+   * Confirm offer (streamline-reviewed-workflow fix): a dedicated handler,
+   * not the generic `run()`, for two reasons -
+   *  1. Success navigates AWAY to the reviewed detail page (Task 3) instead
+   *     of refreshing the current (review) route, so it must never also call
+   *     `router.refresh()` on the page it's about to leave.
+   *  2. `confirmFarmOffer` is now hardened server-side (actions.ts) to
+   *     always resolve to an `ActionResult`, but a network-level failure
+   *     (the fetch to the Server Action itself rejecting) still can't be
+   *     ruled out client-side - the try/catch here guarantees `confirming`
+   *     is always reset and an error is always shown, so the button can
+   *     never stay stuck disabled with no feedback (Task 4).
+   */
+  function handleConfirm() {
+    if (isPending || confirming) return;
+    setConfirming(true);
+    startTransition(async () => {
+      let result: ActionResult;
+      try {
+        result = await confirmFarmOffer(offerId);
+      } catch {
+        result = { ok: false, message: "Bevestigen is mislukt. Probeer het opnieuw." };
+      }
+      if (result.ok) {
+        // Only reachable after successful finalization - stays on the review
+        // page with the error shown otherwise (Task 3's explicit requirement).
+        router.push(`/farm-offers/${offerId}`);
+        return;
+      }
+      setToast(result);
+      setConfirming(false);
     });
   }
 
@@ -161,11 +200,11 @@ export function ReviewOfferClient({
         ) : (
           <button
             className="btn-primary"
-            disabled={isPending || summary.blocking > 0 || lines.length === 0}
+            disabled={isPending || confirming || summary.blocking > 0 || lines.length === 0}
             title={summary.blocking > 0 ? "Los eerst alle blokkerende fouten op" : undefined}
-            onClick={() => run(() => confirmFarmOffer(offerId))}
+            onClick={handleConfirm}
           >
-            Confirm offer
+            {confirming ? "Offer bevestigen..." : "Confirm offer"}
           </button>
         )}
       </div>
