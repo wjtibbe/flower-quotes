@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mocks the dynamically-imported "@anthropic-ai/sdk" module (AnthropicParserProvider
 // does `await import("@anthropic-ai/sdk")` itself) so these tests exercise the real
-// provider logic - forced tool-use, validation, prompt/payload building, retry/timeout,
-// error mapping, logging - without ever making a real network call. `vi.hoisted` is
-// required because `vi.mock` factories run before the top-level imports below.
+// provider logic - native structured output, validation, prompt/payload building,
+// retry/timeout, error mapping, logging - without ever making a real network call.
+// `vi.hoisted` is required because `vi.mock` factories run before the top-level
+// imports below.
 const { mockCreate, MockAnthropicClient } = vi.hoisted(() => {
   const mockCreate = vi.fn();
   class MockAnthropicClient {
@@ -19,13 +20,14 @@ vi.mock("@anthropic-ai/sdk", () => ({
 }));
 
 import {
+  AnthropicContentRefusedError,
   AnthropicNoLinesDetectedError,
   AnthropicNotConfiguredError,
   AnthropicParserProvider,
   AnthropicRequestError,
   AnthropicResponseFormatError,
+  AnthropicStructuredOutputInvalidError,
   AnthropicTimeoutError,
-  AnthropicToolInputInvalidError,
   AnthropicOutputTruncatedError,
   AnthropicUnsupportedImageTypeError,
   AnthropicEmptyImageError,
@@ -57,17 +59,9 @@ const validLine = {
   parserWarnings: [],
 };
 
-/** The primary happy-path shape: a forced `submit_offer_extraction` tool call. */
-function toolUseResponse(lines: unknown[], stopReason = "tool_use") {
-  return {
-    stop_reason: stopReason,
-    content: [{ type: "tool_use", id: "toolu_1", name: "submit_offer_extraction", input: { lines } }],
-  };
-}
-
-/** Legacy backward-compat shape: a plain text block containing a JSON array. */
-function legacyTextResponse(lines: unknown[]) {
-  return { stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(lines) }] };
+/** The primary happy-path shape: native structured output - a text block of `{ lines }`. */
+function structuredResponse(lines: unknown[], stopReason = "end_turn") {
+  return { stop_reason: stopReason, content: [{ type: "text", text: JSON.stringify({ lines }) }] };
 }
 
 const textSource: TextImportSource = { kind: "text", text: "Dallas 60cm 0.38" };
@@ -137,9 +131,9 @@ describe("AnthropicParserProvider - transport error taxonomy (unchanged)", () =>
   }, 15_000);
 });
 
-describe("AnthropicParserProvider - forced tool-use happy path (section 11.A/B/G)", () => {
-  it("forces the submit_offer_extraction tool and resolves a text source to parsed lines", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
+describe("AnthropicParserProvider - native structured-output happy path", () => {
+  it("requests native structured output (no fake tool) and resolves a text source to parsed lines", async () => {
+    mockCreate.mockResolvedValue(structuredResponse([validLine]));
     const provider = new AnthropicParserProvider();
     const lines = await provider.parseOfferSource(textSource, { supplierName: "Test Farm" });
 
@@ -148,26 +142,22 @@ describe("AnthropicParserProvider - forced tool-use happy path (section 11.A/B/G
     expect(lines[0].lengthCm).toBe(60);
 
     const call = mockCreate.mock.calls[0][0];
-    // The forced tool is declared and selected.
-    expect(call.tools?.[0]?.name).toBe("submit_offer_extraction");
-    expect(call.tool_choice).toEqual({ type: "tool", name: "submit_offer_extraction" });
-    // Content is still just the instruction text (tools live at top level, not in content).
+    // Native structured output is requested via output_config.format...
+    expect(call.output_config?.format?.type).toBe("json_schema");
+    expect(call.output_config?.format?.schema?.required).toContain("lines");
+    // ...and thinking is disabled to preserve the full output budget for JSON.
+    expect(call.thinking).toEqual({ type: "disabled" });
+    // The old forced-tool workaround is gone entirely.
+    expect(call.tools).toBeUndefined();
+    expect(call.tool_choice).toBeUndefined();
+    // Content is just the instruction text.
     expect(call.messages[0].content).toHaveLength(1);
     expect(call.messages[0].content[0].type).toBe("text");
     expect(call.messages[0].content[0].text).toContain("Test Farm");
   });
 
-  it("B (production-bug regression): a response with a tool_use block but NO text block SUCCEEDS", async () => {
-    // Exactly the shape that used to throw AnthropicResponseFormatError ("geen leesbare tekst").
-    mockCreate.mockResolvedValue(toolUseResponse([validLine], "tool_use"));
-    const provider = new AnthropicParserProvider();
-    const lines = await provider.parseOfferSource(textSource);
-    expect(lines).toHaveLength(1);
-    expect(lines[0].varietyRaw).toBe("Dallas");
-  });
-
-  it("G: an image source uses the same forced tool-use flow", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
+  it("an image source uses the same native structured-output flow and still sends the image block", async () => {
+    mockCreate.mockResolvedValue(structuredResponse([validLine]));
     const provider = new AnthropicParserProvider();
     const bytes = Buffer.from("fake-png-bytes-for-test");
     const source: ImageImportSource = { kind: "image", bytes, mediaType: "image/png", fileName: "offer.png" };
@@ -176,7 +166,8 @@ describe("AnthropicParserProvider - forced tool-use happy path (section 11.A/B/G
 
     expect(lines).toHaveLength(1);
     const call = mockCreate.mock.calls[0][0];
-    expect(call.tool_choice).toEqual({ type: "tool", name: "submit_offer_extraction" });
+    expect(call.output_config?.format?.type).toBe("json_schema");
+    expect(call.tool_choice).toBeUndefined();
     const content = call.messages[0].content;
     expect(content).toHaveLength(2);
     expect(content[0].type).toBe("image");
@@ -184,70 +175,90 @@ describe("AnthropicParserProvider - forced tool-use happy path (section 11.A/B/G
     expect(content[1].type).toBe("text");
   });
 
-  it("throws AnthropicNoLinesDetectedError when the tool returns an empty lines array", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([]));
+  it("throws AnthropicNoLinesDetectedError when the structured output is an empty lines array", async () => {
+    mockCreate.mockResolvedValue(structuredResponse([]));
     const provider = new AnthropicParserProvider();
     await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicNoLinesDetectedError);
   });
 });
 
-describe("AnthropicParserProvider - structured retry + errors (section 11.C/D, 9, 10)", () => {
-  it("C: a tool call with the WRONG name is retried once, then surfaces AnthropicResponseFormatError", async () => {
-    mockCreate.mockResolvedValue({
-      stop_reason: "tool_use",
-      content: [{ type: "tool_use", id: "t", name: "some_other_tool", input: { lines: [validLine] } }],
-    });
+describe("AnthropicParserProvider - structured retry + errors", () => {
+  it("a response with no readable text block is retried once, then surfaces AnthropicResponseFormatError", async () => {
+    mockCreate.mockResolvedValue({ stop_reason: "end_turn", content: [] });
     const provider = new AnthropicParserProvider();
     await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicResponseFormatError);
     expect(mockCreate).toHaveBeenCalledTimes(2); // 1 initial + 1 structured retry
   });
 
-  it("D: Zod-invalid tool input is retried once, then surfaces AnthropicToolInputInvalidError", async () => {
-    const invalid = toolUseResponse([{ ...validLine, confidence: "definitely" }]); // bad enum
-    mockCreate.mockResolvedValue(invalid);
+  it("a text block that is not valid JSON is retried once, then surfaces AnthropicStructuredOutputInvalidError", async () => {
+    mockCreate.mockResolvedValue({ stop_reason: "end_turn", content: [{ type: "text", text: "not json [" }] });
     const provider = new AnthropicParserProvider();
-    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicToolInputInvalidError);
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicStructuredOutputInvalidError);
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
 
-  it("D (recovery): a first invalid tool input then a valid one on retry SUCCEEDS", async () => {
+  it("JSON without a `lines` array is retried once, then surfaces AnthropicStructuredOutputInvalidError", async () => {
+    mockCreate.mockResolvedValue({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: JSON.stringify({ notLines: true }) }],
+    });
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicStructuredOutputInvalidError);
+    expect(mockCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("a first unreadable response then a valid one on retry SUCCEEDS", async () => {
     mockCreate
-      .mockResolvedValueOnce(toolUseResponse([{ ...validLine, confidence: "definitely" }]))
-      .mockResolvedValueOnce(toolUseResponse([validLine]));
+      .mockResolvedValueOnce({ stop_reason: "end_turn", content: [] })
+      .mockResolvedValueOnce(structuredResponse([validLine]));
     const provider = new AnthropicParserProvider();
     const lines = await provider.parseOfferSource(textSource);
     expect(lines).toHaveLength(1);
     expect(mockCreate).toHaveBeenCalledTimes(2);
   });
+
+  it("a per-line schema violation degrades that line (no retry, no error) - never drops a line", async () => {
+    // Native structured output guarantees the schema, but if a bad line ever
+    // slips through it must degrade into review, not fail the whole import.
+    mockCreate.mockResolvedValue(structuredResponse([validLine, { ...validLine, confidence: "definitely" }]));
+    const provider = new AnthropicParserProvider();
+    const lines = await provider.parseOfferSource(textSource);
+    expect(lines).toHaveLength(2);
+    expect(lines[1].needsReview).toBe(true);
+    expect(lines[1].confidence).toBe("low");
+    expect(mockCreate).toHaveBeenCalledTimes(1); // degraded on the first attempt, no retry
+  });
 });
 
 describe("AnthropicParserProvider - output truncation is first-class (section 27)", () => {
   it("stop_reason 'max_tokens' throws AnthropicOutputTruncatedError immediately, with NO retry", async () => {
-    // A truncated response: the tool input is empty because the model was cut
-    // off. This must NOT become "lines: Required" and must NOT be retried.
-    mockCreate.mockResolvedValue({
-      stop_reason: "max_tokens",
-      content: [{ type: "tool_use", id: "t", name: "submit_offer_extraction", input: {} }],
-    });
+    // A truncated response: the structured object is incomplete because the
+    // model was cut off. This must NOT be retried or degrade into an invalid-output error.
+    mockCreate.mockResolvedValue({ stop_reason: "max_tokens", content: [{ type: "text", text: '{"lines":[' }] });
     const provider = new AnthropicParserProvider();
     await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicOutputTruncatedError);
-    // Truncation is terminal - retrying would just truncate again.
     expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 
-  it("a truncated response never degrades into AnthropicToolInputInvalidError", async () => {
-    mockCreate.mockResolvedValue({
-      stop_reason: "max_tokens",
-      content: [{ type: "tool_use", id: "t", name: "submit_offer_extraction", input: {} }],
-    });
+  it("a truncated response never degrades into AnthropicStructuredOutputInvalidError", async () => {
+    mockCreate.mockResolvedValue({ stop_reason: "max_tokens", content: [{ type: "text", text: '{"lines":[' }] });
     const provider = new AnthropicParserProvider();
-    await expect(provider.parseOfferSource(textSource)).rejects.not.toThrow(AnthropicToolInputInvalidError);
+    await expect(provider.parseOfferSource(textSource)).rejects.not.toThrow(AnthropicStructuredOutputInvalidError);
+  });
+});
+
+describe("AnthropicParserProvider - refusal is first-class", () => {
+  it("stop_reason 'refusal' throws AnthropicContentRefusedError immediately, with NO retry", async () => {
+    mockCreate.mockResolvedValue({ stop_reason: "refusal", content: [{ type: "text", text: "I can't help with that." }] });
+    const provider = new AnthropicParserProvider();
+    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicContentRefusedError);
+    expect(mockCreate).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("AnthropicParserProvider - length range preservation", () => {
   it("keeps a length RANGE as lengthRaw and does NOT collapse it into lengthCm", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([{ ...validLine, length: "40-60cm", fobPricePerStem: null }]));
+    mockCreate.mockResolvedValue(structuredResponse([{ ...validLine, length: "40-60cm", fobPricePerStem: null }]));
     const provider = new AnthropicParserProvider();
     const lines = await provider.parseOfferSource(textSource);
     expect(lines).toHaveLength(1);
@@ -256,7 +267,7 @@ describe("AnthropicParserProvider - length range preservation", () => {
   });
 
   it("a single length still populates lengthCm (and lengthRaw mirrors it)", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([{ ...validLine, length: "60cm" }]));
+    mockCreate.mockResolvedValue(structuredResponse([{ ...validLine, length: "60cm" }]));
     const provider = new AnthropicParserProvider();
     const lines = await provider.parseOfferSource(textSource);
     expect(lines[0].lengthCm).toBe(60);
@@ -264,82 +275,9 @@ describe("AnthropicParserProvider - length range preservation", () => {
   });
 });
 
-describe("AnthropicParserProvider - stringified tool lines recovery ('lines: Expected array, received string')", () => {
-  it("recovers when tool_use.input.lines arrives as a JSON-stringified array, and logs the recovery with safe metadata only", async () => {
-    mockCreate.mockResolvedValue({
-      stop_reason: "tool_use",
-      content: [
-        { type: "tool_use", id: "toolu_1", name: "submit_offer_extraction", input: { lines: JSON.stringify([validLine]) } },
-      ],
-    });
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const provider = new AnthropicParserProvider();
-
-    const lines = await provider.parseOfferSource(textSource);
-
-    expect(lines).toHaveLength(1);
-    expect(lines[0].varietyRaw).toBe("Dallas");
-    // No retry needed - recovered on the first attempt.
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-
-    const loggedRecovery = warnSpy.mock.calls.some((c) => String(c[0]).includes("recovered stringified tool lines"));
-    expect(loggedRecovery).toBe(true);
-
-    // F: no supplier text/line content anywhere in the logs - metadata only.
-    const allLoggedArgs = [...infoSpy.mock.calls, ...warnSpy.mock.calls, ...errorSpy.mock.calls]
-      .flat()
-      .map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)))
-      .join("\n");
-    expect(allLoggedArgs).not.toContain("Dallas");
-    expect(allLoggedArgs).not.toContain("0.38");
-    expect(allLoggedArgs).toContain("lineCount");
-  });
-
-  it("G: the normal array `lines` happy path is completely unaffected (no recovery, no extra log)", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const provider = new AnthropicParserProvider();
-
-    const lines = await provider.parseOfferSource(textSource);
-
-    expect(lines).toHaveLength(1);
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-    const loggedRecovery = warnSpy.mock.calls.some((c) => String(c[0]).includes("recovered stringified tool lines"));
-    expect(loggedRecovery).toBe(false);
-  });
-
-  it("a string that parses to invalid JSON is not recovered - retries once, then surfaces AnthropicToolInputInvalidError", async () => {
-    mockCreate.mockResolvedValue({
-      stop_reason: "tool_use",
-      content: [{ type: "tool_use", id: "toolu_1", name: "submit_offer_extraction", input: { lines: "not json [" } }],
-    });
-    const provider = new AnthropicParserProvider();
-    await expect(provider.parseOfferSource(textSource)).rejects.toThrow(AnthropicToolInputInvalidError);
-    expect(mockCreate).toHaveBeenCalledTimes(2); // 1 initial + 1 structured retry
-  });
-});
-
-describe("AnthropicParserProvider - legacy text fallback (section 11.E, 4)", () => {
-  it("E: a valid legacy free-text JSON array (no tool call) still works via fallback", async () => {
-    mockCreate.mockResolvedValue(legacyTextResponse([validLine]));
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const provider = new AnthropicParserProvider();
-
-    const lines = await provider.parseOfferSource(textSource);
-    expect(lines).toHaveLength(1);
-    expect(lines[0].varietyRaw).toBe("Dallas");
-    // Only one call - the fallback consumed the first response, no retry needed.
-    expect(mockCreate).toHaveBeenCalledTimes(1);
-    const loggedFallback = warnSpy.mock.calls.some((c) => String(c[0]).includes("legacy free-text JSON fallback used"));
-    expect(loggedFallback).toBe(true);
-  });
-});
-
-describe("AnthropicParserProvider - safe logging (section 11.F, 5)", () => {
-  it("never logs base64 image data, image bytes, extracted document text, stop_reason aside, or block content", async () => {
-    mockCreate.mockResolvedValue(toolUseResponse([validLine]));
+describe("AnthropicParserProvider - safe logging", () => {
+  it("never logs base64 image data, image bytes, extracted document text, or block content", async () => {
+    mockCreate.mockResolvedValue(structuredResponse([validLine]));
     const infoSpy = vi.spyOn(console, "info").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});

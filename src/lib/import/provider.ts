@@ -125,28 +125,35 @@ export class AnthropicResponseFormatError extends Error {
   }
 }
 
-export class AnthropicJsonParseError extends Error {
+/**
+ * The model returned native structured output, but it could not be read as the
+ * expected `{ lines: [...] }` object even after one targeted retry - either the
+ * text block was not valid JSON, or it parsed to something without a `lines`
+ * array. Distinct from `AnthropicResponseFormatError` (no readable text block at
+ * all) so the error taxonomy stays precise (section 10).
+ */
+export class AnthropicStructuredOutputInvalidError extends Error {
   constructor(detail?: string) {
     super(
-      `De AI-respons kon niet als JSON worden gelezen${detail ? ` (${detail})` : ""}. Probeer het opnieuw of voer de regels handmatig in.`,
+      `De AI leverde een gestructureerd resultaat op dat niet gelezen kon worden${detail ? ` (${detail})` : ""}. Probeer het opnieuw of voer de regels handmatig in.`,
     );
-    this.name = "AnthropicJsonParseError";
+    this.name = "AnthropicStructuredOutputInvalidError";
   }
 }
 
 /**
- * The model called the extraction tool, but its structured input failed the
- * strict Zod validation even after one targeted retry. Distinct from
- * `AnthropicResponseFormatError` (no tool call at all) and
- * `AnthropicJsonParseError` (legacy free-text path) so the error taxonomy
- * stays precise (section 10).
+ * The model declined to answer (`stop_reason: "refusal"`), so it produced no
+ * schema-shaped extraction at all. A first-class, distinct condition: like
+ * truncation it must fail immediately with a specific message and must NOT be
+ * retried (a retry would just refuse again) or degrade into a confusing
+ * "invalid output"/"no lines" error.
  */
-export class AnthropicToolInputInvalidError extends Error {
-  constructor(detail?: string) {
+export class AnthropicContentRefusedError extends Error {
+  constructor() {
     super(
-      `De AI leverde een gestructureerd resultaat op dat niet gevalideerd kon worden${detail ? ` (${detail})` : ""}. Probeer het opnieuw of voer de regels handmatig in.`,
+      "De AI heeft deze bron geweigerd te verwerken. Controleer de inhoud of voer de regels handmatig in.",
     );
-    this.name = "AnthropicToolInputInvalidError";
+    this.name = "AnthropicContentRefusedError";
   }
 }
 
@@ -228,13 +235,13 @@ Rules:
 - If a price is quoted per bunch or per box rather than per stem, and stemsPerBox is stated and unambiguous, convert it to price-per-stem and note the conversion in parserWarnings. If you cannot convert with confidence, set fobPricePerStem to null and explain in parserWarnings instead of guessing.
 - Grade/size qualifiers such as Select, Premium, Fancy, Jumbo, Extra or Standard belong in the "grade" field - never append them to "variety".
 - Set needsReview to true whenever boxType, stemsPerBox, fobPricePerStem or currency is null or uncertain, or the line is otherwise ambiguous.
-- Return your result by calling the \`submit_offer_extraction\` tool exactly once, passing every extracted offer line in its \`lines\` array. Do not write the result as plain text - the tool call is the only output.`;
+- Return your result as a single JSON object of the form { "lines": [ ... ] }, with every extracted offer line in the \`lines\` array. Emit nothing but that JSON object - no prose, no explanation, no markdown fences.`;
 
 // Keep in sync with ModelLineSchema below - every key here must exist there
 // with the same type, and vice versa. This text documents the shape of each
-// element of the `submit_offer_extraction` tool's `lines` array (the tool's
-// own input_schema enforces it - this is the human-readable reinforcement).
-const JSON_SCHEMA_TEXT = `Each element of the tool's "lines" array MUST be an object with EXACTLY these fields - no missing fields, no extra fields:
+// element of the response's `lines` array (the native structured-output schema
+// enforces it - this is the human-readable reinforcement).
+const JSON_SCHEMA_TEXT = `Each element of the "lines" array MUST be an object with EXACTLY these fields - no missing fields, no extra fields:
 {
   "rawText": string,
   "farmName": string | null,
@@ -452,31 +459,40 @@ export const ModelLineSchema = z
 type ModelLine = z.infer<typeof ModelLineSchema>;
 
 // ---------------------------------------------------------------------------
-// Tool-based structured output
+// Native structured output
 // ---------------------------------------------------------------------------
 //
-// Root cause this replaces: the model used to return the extraction as a free
-// assistant TEXT block that we then parsed as JSON. That is unreliable - in
-// Production it intermittently produced malformed JSON or (as the real Vercel
-// log showed) a response with NO usable text block at all
-// ("AnthropicResponseFormatError"). Forcing a single tool call makes the model
-// emit its result as a structured `tool_use.input` object that the API itself
-// shapes against `input_schema`, which we then validate with the SAME Zod
-// schema as before. Zod stays the final safety boundary.
+// Root cause this replaces: the extraction was forced through a fake client
+// tool (`submit_offer_extraction` + `tool_choice`) purely to shape the output.
+// In Production that path was unreliable - the API intermittently delivered
+// `tool_use.input.lines` as a JSON-*stringified* array ("lines: Expected array,
+// received string") or as otherwise malformed input, forcing string-repair
+// heuristics. Anthropic's native Structured Outputs constrain the model's
+// response directly against a JSON Schema (`output_config.format`), so the
+// response is a plain assistant TEXT block containing exactly the JSON object
+// we asked for. We JSON.parse that block and validate it with the SAME Zod
+// schema (`StructuredOutputSchema`) - Zod stays the final safety boundary, and
+// there is no fake tool, no forced tool_choice and no stringified-array repair.
 
-const OFFER_EXTRACTION_TOOL_NAME = "submit_offer_extraction";
 // One targeted structured-output retry (section 9), on top of the transport
-// retries `withRetry` already does for 429/5xx/network. Used only when the
-// API call itself succeeded but the response had no valid tool call.
+// retries `withRetry` already does for 429/5xx/network. Used only when the API
+// call itself succeeded but the response carried no usable structured object.
 const MAX_STRUCTURED_RETRIES = 1;
 
-// The tool's input is exactly `{ lines: ModelLine[] }` - the SAME strict
-// per-line schema (`ModelLineSchema`) that already validated the legacy
-// free-text output, so there is a single source of truth and no schema drift.
-const ToolInputSchema = z.object({ lines: z.array(ModelLineSchema) }).strict();
+// The response object is exactly `{ lines: ModelLine[] }` - the SAME strict
+// per-line schema (`ModelLineSchema`) that already validated the previous
+// output, so there is a single source of truth and no schema drift.
+const StructuredOutputSchema = z.object({ lines: z.array(ModelLineSchema) }).strict();
 
-// JSON Schema for one line, hand-mirrored from `ModelLineSchema` above. The
-// `mappingSchemaKeysMatch` export + its test assert these two never drift.
+// JSON Schema for one line, hand-mirrored from `ModelLineSchema` above and used
+// directly as the native `output_config.format` schema. The
+// `OFFER_LINE_JSON_SCHEMA_KEYS` export + its test assert these never drift.
+//
+// Nullable enums (boxType, currency) MUST be expressed as `anyOf` of a string
+// enum and `{ type: "null" }`: the structured-output schema validator rejects
+// the `{ type: ["string", "null"], enum: [...] }` form the old tool
+// `input_schema` used ("Enum value 'QB' does not match declared type"). All
+// other nullable scalars keep the plain `["string"|"number", "null"]` union.
 const OFFER_LINE_JSON_SCHEMA_PROPERTIES: Record<string, unknown> = {
   rawText: { type: "string" },
   farmName: { type: ["string", "null"] },
@@ -487,11 +503,11 @@ const OFFER_LINE_JSON_SCHEMA_PROPERTIES: Record<string, unknown> = {
   color: { type: ["string", "null"] },
   grade: { type: ["string", "null"] },
   treatment: { type: ["string", "null"] },
-  boxType: { type: ["string", "null"], enum: ["QB", "HB", "FB", null] },
+  boxType: { anyOf: [{ type: "string", enum: ["QB", "HB", "FB"] }, { type: "null" }] },
   boxesAvailable: { type: ["number", "null"] },
   stemsPerBox: { type: ["number", "null"] },
   fobPricePerStem: { type: ["string", "null"] },
-  currency: { type: ["string", "null"], enum: ["USD", "EUR", null] },
+  currency: { anyOf: [{ type: "string", enum: ["USD", "EUR"] }, { type: "null" }] },
   weightPerBoxKg: { type: ["string", "null"] },
   extraLeadTimeHrs: { type: ["number", "null"] },
   confidence: { type: "string", enum: ["high", "medium", "low"] },
@@ -500,121 +516,110 @@ const OFFER_LINE_JSON_SCHEMA_PROPERTIES: Record<string, unknown> = {
 };
 
 /**
- * The single client-side tool Claude is forced to call. It performs no
- * external action - it exists purely to fix the output SHAPE (section 1).
- * `input_schema` mirrors `ModelLineSchema`; the model returns its extraction
- * as `tool_use.input`, which we then re-validate with Zod.
+ * The native structured-output JSON Schema passed as `output_config.format`.
+ * It constrains the model's response to exactly `{ lines: ModelLine[] }`, which
+ * we then re-validate with `StructuredOutputSchema` (Zod).
  */
-export const OFFER_EXTRACTION_TOOL: Anthropic.Tool = {
-  name: OFFER_EXTRACTION_TOOL_NAME,
-  description:
-    "Submit the structured list of flower offer lines extracted from the supplier's availability list. Call this exactly once with every extracted line in `lines`. This is the only way to return your result.",
-  input_schema: {
-    type: "object",
-    properties: {
-      lines: {
-        type: "array",
-        items: {
-          type: "object",
-          properties: OFFER_LINE_JSON_SCHEMA_PROPERTIES,
-          required: Object.keys(OFFER_LINE_JSON_SCHEMA_PROPERTIES),
-          additionalProperties: false,
-        },
+export const OFFER_OUTPUT_JSON_SCHEMA = {
+  type: "object",
+  properties: {
+    lines: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: OFFER_LINE_JSON_SCHEMA_PROPERTIES,
+        required: Object.keys(OFFER_LINE_JSON_SCHEMA_PROPERTIES),
+        additionalProperties: false,
       },
     },
-    required: ["lines"],
-    additionalProperties: false,
   },
-};
+  required: ["lines"],
+  additionalProperties: false,
+} as const;
 
-/** Exposed only so a test can assert the tool schema and Zod schema never drift apart. */
+/** Exposed only so a test can assert the JSON schema and Zod schema never drift apart. */
 export const OFFER_LINE_JSON_SCHEMA_KEYS = Object.keys(OFFER_LINE_JSON_SCHEMA_PROPERTIES);
 
 export type StructuredExtractionResult =
-  | { ok: true; lines: ParsedOfferLine[]; recovered?: boolean }
-  | { ok: false; reason: "no_tool_use"; stopReason: string | null; blockTypes: string[] }
-  | { ok: false; reason: "invalid_tool_input"; detail: string };
+  | { ok: true; lines: ParsedOfferLine[] }
+  | { ok: false; reason: "no_structured_output"; stopReason: string | null; blockTypes: string[] }
+  | { ok: false; reason: "invalid_output"; detail: string };
 
 /**
- * Conservative recovery for exactly one known malformed shape (Production
- * bug: "lines: Expected array, received string") - the model occasionally
- * returns `tool_use.input.lines` as a JSON-*stringified* array instead of an
- * actual array, despite the tool's own `input_schema` declaring it as an
- * array. This is NOT a new output contract and never coercively parses any
- * other field: it only fires when `input` is a plain object whose `lines`
- * property is a string that itself parses as JSON into an array. Anything
- * else (invalid JSON, a parsed non-array value, `lines` already an array,
- * `input` not an object) returns null so the caller falls through to the
- * normal invalid-tool-input path (structured retry, then a typed error) -
- * "do not guess".
+ * Maps an array of raw model line objects to `ParsedOfferLine[]`, applying the
+ * defensive line cap and per-line graceful degradation. A line that passes the
+ * strict `ModelLineSchema` is mapped normally; one that fails is NOT dropped or
+ * allowed to fail the whole batch - it's best-effort recovered
+ * (`buildDegradedLine`) and forced into review, so one malformed element never
+ * costs the user the other, valid lines. With native structured output a
+ * per-line schema failure is virtually impossible (the API enforces the
+ * schema), but this keeps the long-standing "never drop a line" guarantee.
  */
-function recoverStringifiedLines(input: unknown): Record<string, unknown> | null {
-  if (typeof input !== "object" || input === null || Array.isArray(input)) return null;
-  const obj = input as Record<string, unknown>;
-  if (typeof obj.lines !== "string") return null;
-  let parsedLines: unknown;
-  try {
-    parsedLines = JSON.parse(obj.lines);
-  } catch {
-    return null;
+function mapModelLines(rawLines: unknown[]): ParsedOfferLine[] {
+  let items = rawLines;
+  if (rawLines.length > MAX_LINES_PER_RESPONSE) {
+    console.warn("[import:anthropic] response line count truncated", {
+      totalLines: rawLines.length,
+      keptLines: MAX_LINES_PER_RESPONSE,
+    });
+    items = rawLines.slice(0, MAX_LINES_PER_RESPONSE);
   }
-  if (!Array.isArray(parsedLines)) return null;
-  return { ...obj, lines: parsedLines };
+
+  let recoveredCount = 0;
+  const result = items.map((item) => {
+    const validated = ModelLineSchema.safeParse(item);
+    if (validated.success) return mapValidatedLine(validated.data);
+    recoveredCount++;
+    return buildDegradedLine(item, validated.error.issues);
+  });
+
+  if (recoveredCount > 0) {
+    console.warn("[import:anthropic] some lines failed schema validation and were partially recovered", {
+      recoveredCount,
+      totalLines: items.length,
+    });
+  }
+  return result;
 }
 
 /**
- * Pure extraction of offer lines from an Anthropic Messages response,
- * tool-use first (section 3). No network, so it's directly unit-testable
- * against hand-built response shapes - including the exact Production bug
- * (a response with a tool_use block but no text block, which must SUCCEED).
+ * Pure extraction of offer lines from an Anthropic Messages response produced
+ * with native structured output (section 3). No network, so it's directly
+ * unit-testable against hand-built response shapes.
  *
- * Flow: find the `submit_offer_extraction` tool_use block -> validate its
- * `input` with the SAME Zod schema -> map to `ParsedOfferLine[]`. A response
- * without that tool call, or with tool input that fails Zod, returns a typed
- * failure the caller decides how to retry/surface. If the initial Zod
- * validation fails specifically because `lines` arrived as a JSON-stringified
- * array, one conservative recovery attempt re-validates the parsed array
- * through the SAME strict `ToolInputSchema` (`recovered: true` on success) -
- * never a weaker/alternate schema. Still pure - never logs (the caller has
- * the safe metadata - source kind, chunk/batch index - to log with).
+ * Flow: find the assistant TEXT block -> `JSON.parse` it -> require a `{ lines:
+ * [...] }` object -> map each line to `ParsedOfferLine` (per-line degradation
+ * via `mapModelLines`). A response with no readable text block returns
+ * `no_structured_output`; text that is not valid JSON, or JSON without a
+ * `lines` array, returns `invalid_output` - the caller decides how to
+ * retry/surface each. Individual malformed line objects never fail here; they
+ * degrade. Still pure - never logs the source (the caller has safe metadata -
+ * source kind, chunk/batch index - to log with); the only logs are the
+ * cap/degrade counters inside `mapModelLines`, which carry no document content.
  */
-export function extractLinesFromToolUse(response: {
+export function extractLinesFromStructuredOutput(response: {
   stop_reason?: string | null;
-  content: Array<{ type: string; name?: string; input?: unknown; text?: string }>;
+  content: Array<{ type: string; text?: string }>;
 }): StructuredExtractionResult {
   const blockTypes = response.content.map((b) => b.type);
-  const toolBlock = response.content.find(
-    (b) => b.type === "tool_use" && b.name === OFFER_EXTRACTION_TOOL_NAME,
-  );
-  if (!toolBlock) {
-    return { ok: false, reason: "no_tool_use", stopReason: response.stop_reason ?? null, blockTypes };
-  }
-  const parsed = ToolInputSchema.safeParse(toolBlock.input);
-  if (parsed.success) {
-    return { ok: true, lines: parsed.data.lines.map(mapValidatedLine) };
+  const textBlock = response.content.find((b) => b.type === "text" && typeof b.text === "string");
+  const text = textBlock?.text;
+  if (!text || !text.trim()) {
+    return { ok: false, reason: "no_structured_output", stopReason: response.stop_reason ?? null, blockTypes };
   }
 
-  const recoveredInput = recoverStringifiedLines(toolBlock.input);
-  if (recoveredInput) {
-    const recoveredParsed = ToolInputSchema.safeParse(recoveredInput);
-    if (recoveredParsed.success) {
-      return { ok: true, lines: recoveredParsed.data.lines.map(mapValidatedLine), recovered: true };
-    }
-    // The recovered array itself still fails the strict per-line schema
-    // (e.g. a line object violates ModelLineSchema) - report THAT detail,
-    // never silently fall back to the original "expected array" error.
-    const detail = recoveredParsed.error.issues
-      .slice(0, 5)
-      .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-      .join("; ");
-    return { ok: false, reason: "invalid_tool_input", detail };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    return { ok: false, reason: "invalid_output", detail: err instanceof Error ? err.message : "ongeldige JSON" };
   }
 
-  const detail = parsed.error.issues
-    .slice(0, 5)
-    .map((i) => `${i.path.join(".") || "(root)"}: ${i.message}`)
-    .join("; ");
-  return { ok: false, reason: "invalid_tool_input", detail };
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed) || !Array.isArray((parsed as { lines?: unknown }).lines)) {
+    return { ok: false, reason: "invalid_output", detail: "respons bevatte geen 'lines'-array" };
+  }
+
+  return { ok: true, lines: mapModelLines((parsed as { lines: unknown[] }).lines) };
 }
 
 export class AnthropicParserProvider implements ImportParserProvider {
@@ -644,10 +649,12 @@ export class AnthropicParserProvider implements ImportParserProvider {
     };
     const startedAt = Date.now();
 
-    // Primary happy path is forced tool-use (section 1/2). We make up to
-    // 1 + MAX_STRUCTURED_RETRIES structured attempts; each attempt's own
-    // transport failures (429/5xx/network/timeout) are still handled by
-    // `withRetry` inside it, with the taxonomy unchanged.
+    // Primary happy path is native structured output (section 1/2): the
+    // response is constrained to our JSON Schema via `output_config.format`, so
+    // it comes back as a plain text block containing exactly `{ lines: [...] }`.
+    // We make up to 1 + MAX_STRUCTURED_RETRIES structured attempts; each
+    // attempt's own transport failures (429/5xx/network/timeout) are still
+    // handled by `withRetry` inside it, with the taxonomy unchanged.
     let lines: ParsedOfferLine[] | null = null;
 
     for (let structuredAttempt = 0; structuredAttempt <= MAX_STRUCTURED_RETRIES; structuredAttempt++) {
@@ -661,9 +668,12 @@ export class AnthropicParserProvider implements ImportParserProvider {
                 max_tokens: MAX_OUTPUT_TOKENS,
                 system,
                 messages: [{ role: "user", content }],
-                tools: [OFFER_EXTRACTION_TOOL],
-                // Force THIS specific tool - no free-text JSON happy path (section 2).
-                tool_choice: { type: "tool", name: OFFER_EXTRACTION_TOOL_NAME },
+                // Thinking off keeps the full output budget for JSON (the
+                // chunking math in MAX_OUTPUT_TOKENS assumes no thinking tokens).
+                thinking: { type: "disabled" },
+                // Constrain the response to our JSON Schema natively - no fake
+                // tool, no tool_choice, no free-text JSON to repair (section 2).
+                output_config: { format: { type: "json_schema", schema: OFFER_OUTPUT_JSON_SCHEMA } },
               }),
               REQUEST_TIMEOUT_MS,
               () => new AnthropicTimeoutError(REQUEST_TIMEOUT_MS),
@@ -706,48 +716,43 @@ export class AnthropicParserProvider implements ImportParserProvider {
       });
 
       // Truncation is a first-class condition (section 27): the response was
-      // cut off by the token limit, so its tool input is incomplete. Fail
-      // immediately with a specific error - never retry (it would truncate
-      // again) and never let it fall through to the "invalid tool input"
-      // ("lines: Required") path below.
-      if (response.stop_reason === "max_tokens") {
+      // cut off by the token limit, so its structured object is incomplete.
+      // Fail immediately with a specific error - never retry (it would truncate
+      // again) and never let it fall through to the "invalid output" path below.
+      if (response.stop_reason === "max_tokens" || response.stop_reason === "model_context_window_exceeded") {
         console.error("[import:anthropic] response truncated at max_tokens", {
           ...logMeta,
           durationMs: Date.now() - startedAt,
           inputSizeBytes,
           maxTokens: MAX_OUTPUT_TOKENS,
+          stopReason: response.stop_reason,
         });
         throw new AnthropicOutputTruncatedError();
       }
 
-      const extracted = extractLinesFromToolUse(response);
-      if (extracted.ok) {
-        lines = extracted.lines;
-        if (extracted.recovered) {
-          // Safe metadata only (section 6) - never the recovered line content.
-          console.warn("[import:anthropic] recovered stringified tool lines", {
-            ...logMeta,
-            lineCount: extracted.lines.length,
-          });
-        }
-        break;
+      // The model declined to answer: no schema-shaped output exists, so fail
+      // immediately with a distinct error - never retry, never degrade into a
+      // confusing "invalid output"/"no lines" error.
+      if (response.stop_reason === "refusal") {
+        console.error("[import:anthropic] model refused the request", {
+          ...logMeta,
+          durationMs: Date.now() - startedAt,
+        });
+        throw new AnthropicContentRefusedError();
       }
 
-      // No valid tool call. Backward-compat: if a legacy free-text JSON array
-      // came back anyway, accept it once and log that the fallback ran
-      // (section 4).
-      const legacy = tryLegacyTextFallback(response, logMeta);
-      if (legacy) {
-        lines = legacy;
+      const extracted = extractLinesFromStructuredOutput(response);
+      if (extracted.ok) {
+        lines = extracted.lines;
         break;
       }
 
       if (structuredAttempt < MAX_STRUCTURED_RETRIES) {
-        console.warn("[import:anthropic] structured output missing/invalid - retrying with forced tool", {
+        console.warn("[import:anthropic] structured output missing/invalid - retrying", {
           ...logMeta,
           structuredAttempt,
           reason: extracted.reason,
-          ...(extracted.reason === "no_tool_use"
+          ...(extracted.reason === "no_structured_output"
             ? { stopReason: extracted.stopReason, blockTypes: extracted.blockTypes }
             : { detail: extracted.detail }),
         });
@@ -755,15 +760,15 @@ export class AnthropicParserProvider implements ImportParserProvider {
       }
 
       // Retries exhausted - surface a precise, distinct error (section 5/10).
-      if (extracted.reason === "invalid_tool_input") {
-        console.error("[import:anthropic] tool input failed Zod validation after retry", {
+      if (extracted.reason === "invalid_output") {
+        console.error("[import:anthropic] structured output failed to parse after retry", {
           ...logMeta,
           durationMs: Date.now() - startedAt,
           detail: extracted.detail,
         });
-        throw new AnthropicToolInputInvalidError(extracted.detail);
+        throw new AnthropicStructuredOutputInvalidError(extracted.detail);
       }
-      console.error("[import:anthropic] no valid tool_use block after retry", {
+      console.error("[import:anthropic] no readable structured output after retry", {
         ...logMeta,
         durationMs: Date.now() - startedAt,
         stopReason: extracted.stopReason,
@@ -806,91 +811,6 @@ function isRetryableAnthropicError(err: unknown): boolean {
 function toAnthropicError(err: unknown): Error {
   if (err instanceof AnthropicTimeoutError) return err;
   return new AnthropicRequestError(err);
-}
-
-/**
- * Backward-compat only (section 4): with forced tool-use the model should
- * never return the extraction as plain text, but if a response nonetheless
- * carries a usable legacy free-text JSON array (and no valid tool call), we
- * accept it once rather than failing the import. Returns the parsed lines, or
- * null when there's no usable legacy JSON to fall back to. Logs (safe
- * metadata only) whenever the fallback actually runs.
- */
-function tryLegacyTextFallback(
-  response: { content: Array<{ type: string; text?: string }> },
-  logMeta: Record<string, unknown>,
-): ParsedOfferLine[] | null {
-  const textBlock = response.content.find((b) => b.type === "text" && typeof b.text === "string");
-  const text = textBlock?.text;
-  if (!text || !text.trim() || !/\[[\s\S]*\]/.test(text)) return null;
-  try {
-    const lines = parseAndValidateModelOutput(text);
-    console.warn("[import:anthropic] legacy free-text JSON fallback used", {
-      ...logMeta,
-      lineCount: lines.length,
-    });
-    return lines;
-  } catch {
-    // Not usable legacy JSON either - let the caller retry/surface the error.
-    return null;
-  }
-}
-
-function stripMarkdownFences(text: string): string {
-  return text.replace(/```json/gi, "").replace(/```/g, "");
-}
-
-/**
- * Parses and validates the model's JSON response. A response that isn't
- * readable JSON at all (or isn't an array) is a total failure - the caller
- * has nothing to recover, so this throws a specific `AnthropicJsonParseError`.
- * An individual line that fails the strict schema is NOT dropped and does not
- * fail the whole batch: it's recovered as best-effort (see
- * `buildDegradedLine`) and forced into review, so one malformed element never
- * costs the user the other, valid lines.
- */
-export function parseAndValidateModelOutput(text: string): ParsedOfferLine[] {
-  const cleaned = stripMarkdownFences(text);
-  const jsonMatch = cleaned.match(/\[[\s\S]*\]/);
-  if (!jsonMatch) {
-    throw new AnthropicJsonParseError("geen JSON-array gevonden in de respons");
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(jsonMatch[0]);
-  } catch (err) {
-    throw new AnthropicJsonParseError(err instanceof Error ? err.message : "ongeldige JSON");
-  }
-  if (!Array.isArray(parsed)) {
-    throw new AnthropicJsonParseError("respons was geen array");
-  }
-
-  let items = parsed;
-  if (parsed.length > MAX_LINES_PER_RESPONSE) {
-    console.warn("[import:anthropic] response line count truncated", {
-      totalLines: parsed.length,
-      keptLines: MAX_LINES_PER_RESPONSE,
-    });
-    items = parsed.slice(0, MAX_LINES_PER_RESPONSE);
-  }
-
-  let recoveredCount = 0;
-  const result = items.map((item) => {
-    const validated = ModelLineSchema.safeParse(item);
-    if (validated.success) return mapValidatedLine(validated.data);
-    recoveredCount++;
-    return buildDegradedLine(item, validated.error.issues);
-  });
-
-  if (recoveredCount > 0) {
-    console.warn("[import:anthropic] some lines failed schema validation and were partially recovered", {
-      recoveredCount,
-      totalLines: items.length,
-    });
-  }
-
-  return result;
 }
 
 function mapValidatedLine(parsed: ModelLine): ParsedOfferLine {
