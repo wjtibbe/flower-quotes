@@ -17,6 +17,14 @@ import {
 import { OfferLineReviewRow } from "./OfferLineReviewRow";
 import { MatchSelectionModal } from "./MatchSelectionModal";
 import { CreateAssortmentModal } from "./CreateAssortmentModal";
+import {
+  REVIEW_FILTER_LABELS,
+  computeReviewFilterCounts,
+  defaultReviewFilter,
+  filterReviewLines,
+  reviewFilterEmptyMessage,
+} from "./reviewFilters";
+import type { ReviewFilter } from "./reviewFilters";
 
 /** Plain-data view of one FarmOfferLine, pre-computed server-side (Decimal fields as strings, enums as plain strings) so this whole subtree can be a Client Component. */
 export interface OfferLineViewModel {
@@ -86,22 +94,15 @@ export function ReviewOfferClient({
   // is guaranteed disabled on the very next render, not just eventually.
   const [confirming, setConfirming] = useState(false);
 
-  const summary = useMemo(() => {
-    let ready = 0;
-    let warnings = 0;
-    let blocking = 0;
-    let unmatched = 0;
-    for (const line of lines) {
-      if (line.validationErrors.length > 0) {
-        blocking++;
-      } else {
-        ready++;
-        if (line.validationWarnings.length > 0) warnings++;
-      }
-      if (line.matchStatus === "UNMATCHED") unmatched++;
-    }
-    return { total: lines.length, ready, warnings, blocking, unmatched };
-  }, [lines]);
+  const counts = useMemo(() => computeReviewFilterCounts(lines), [lines]);
+
+  // Computed once, from a lazy initializer, so it opens on "Needs attention"
+  // when the offer has problems (section 1C) but is never silently reset
+  // back to that default on a later render just because `lines` changed
+  // (e.g. after a save) - the user's own filter choice persists across
+  // fixes during the review session (section 1E).
+  const [filter, setFilter] = useState<ReviewFilter>(() => defaultReviewFilter(computeReviewFilterCounts(lines)));
+  const filteredLines = useMemo(() => filterReviewLines(lines, filter), [lines, filter]);
 
   function run(action: () => Promise<ActionResult>, onSuccess?: () => void) {
     if (isPending) return;
@@ -188,20 +189,28 @@ export function ReviewOfferClient({
         </div>
       )}
 
-      <div className="card p-4 flex flex-wrap items-center gap-x-6 gap-y-3 sticky top-2 z-10 shadow-md">
-        <SummaryStat label="Total lines" value={summary.total} />
-        <SummaryStat label="Ready" value={summary.ready} tone="green" />
-        <SummaryStat label="Warnings" value={summary.warnings} tone="amber" />
-        <SummaryStat label="Blocking errors" value={summary.blocking} tone="red" />
-        <SummaryStat label="Unmatched" value={summary.unmatched} tone="gray" />
+      <div className="card p-4 flex flex-wrap items-center gap-x-2 gap-y-2 sticky top-2 z-10 shadow-md">
+        <FilterStat filter="ALL" label={REVIEW_FILTER_LABELS.ALL} value={counts.all} active={filter} onSelect={setFilter} />
+        <FilterStat
+          filter="NEEDS_ATTENTION"
+          label={REVIEW_FILTER_LABELS.NEEDS_ATTENTION}
+          value={counts.needsAttention}
+          tone="red"
+          active={filter}
+          onSelect={setFilter}
+        />
+        <FilterStat filter="READY" label={REVIEW_FILTER_LABELS.READY} value={counts.ready} tone="green" active={filter} onSelect={setFilter} />
+        <FilterStat filter="BLOCKING" label="Blocking errors" value={counts.blocking} tone="red" active={filter} onSelect={setFilter} />
+        <FilterStat filter="WARNINGS" label={REVIEW_FILTER_LABELS.WARNINGS} value={counts.warnings} tone="amber" active={filter} onSelect={setFilter} />
+        <FilterStat filter="UNMATCHED" label={REVIEW_FILTER_LABELS.UNMATCHED} value={counts.unmatched} tone="gray" active={filter} onSelect={setFilter} />
         <div className="flex-1" />
         {offerStatus === "REVIEWED" ? (
           <span className="badge badge-auto-matched">Reviewed</span>
         ) : (
           <button
             className="btn-primary"
-            disabled={isPending || confirming || summary.blocking > 0 || lines.length === 0}
-            title={summary.blocking > 0 ? "Los eerst alle blokkerende fouten op" : undefined}
+            disabled={isPending || confirming || counts.blocking > 0 || lines.length === 0}
+            title={counts.blocking > 0 ? "Los eerst alle blokkerende fouten op" : undefined}
             onClick={handleConfirm}
           >
             {confirming ? "Offer bevestigen..." : "Confirm offer"}
@@ -210,7 +219,7 @@ export function ReviewOfferClient({
       </div>
 
       <div className="space-y-4">
-        {lines.map((line) => (
+        {filteredLines.map((line) => (
           <OfferLineReviewRow
             key={line.id}
             line={line}
@@ -227,6 +236,10 @@ export function ReviewOfferClient({
           <div className="card p-6 text-center text-gray-400">
             Geen regels herkend uit dit bestand. Voeg hieronder handmatig regels toe.
           </div>
+        )}
+
+        {lines.length > 0 && filteredLines.length === 0 && (
+          <div className="card p-6 text-center text-gray-400">{reviewFilterEmptyMessage(filter)}</div>
         )}
       </div>
 
@@ -323,7 +336,29 @@ export function ReviewOfferClient({
   );
 }
 
-function SummaryStat({ label, value, tone }: { label: string; value: number; tone?: "green" | "amber" | "red" | "gray" }) {
+/**
+ * Doubles as both the summary counter AND the filter control (section 1D) -
+ * clicking a stat activates that filter, so the existing compact summary row
+ * never needs a second, duplicate block of UI. The active stat is indicated
+ * with a ring + background tint (and `aria-pressed`) rather than a separate
+ * legend.
+ */
+function FilterStat({
+  filter,
+  label,
+  value,
+  tone,
+  active,
+  onSelect,
+}: {
+  filter: ReviewFilter;
+  label: string;
+  value: number;
+  tone?: "green" | "amber" | "red" | "gray";
+  active: ReviewFilter;
+  onSelect: (filter: ReviewFilter) => void;
+}) {
+  const isActive = active === filter;
   const toneClass =
     tone === "green"
       ? "text-green-700"
@@ -335,10 +370,17 @@ function SummaryStat({ label, value, tone }: { label: string; value: number; ton
             ? "text-gray-600"
             : "text-gray-900";
   return (
-    <div className="text-sm">
+    <button
+      type="button"
+      aria-pressed={isActive}
+      onClick={() => onSelect(filter)}
+      className={`text-sm rounded-md px-2 py-1 transition-colors ${
+        isActive ? "bg-brand-50 ring-1 ring-brand-500" : "hover:bg-gray-50"
+      }`}
+    >
       <span className={`text-lg font-semibold ${toneClass}`}>{value}</span>{" "}
       <span className="text-gray-500">{label}</span>
-    </div>
+    </button>
   );
 }
 

@@ -186,3 +186,42 @@ describe("buildOfferLineViewModel - section 33 supplier-mapping review UI fields
     expect(vm.matchedViaSupplierMapping).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Assortment-only "Garden" variety fallback, end to end through the review
+// view model (section 2I worked example + 24/25: supplier data untouched,
+// SupplierLineMapping/USER_LINKED precedence unchanged).
+// ---------------------------------------------------------------------------
+
+describe("buildOfferLineViewModel - Garden assortment-only variety fallback", () => {
+  it("24: 2I worked example - supplier 'Candlelight' auto-matches the assortment's 'Garden Candlelight', rawText/extractedSnapshot stay exactly as supplied", () => {
+    const line = baseLine({
+      matchStatus: "AUTO_MATCHED",
+      packagingWeightProfileId: null,
+      productGroupRaw: null,
+      varietyRaw: "Candlelight",
+      rawText: "1qb Candlelight 60cm",
+      extractedSnapshot: { varietyRaw: "Candlelight", lengthCm: 60, parserWarnings: [] },
+    });
+    const vm = buildOfferLineViewModel(line, FARM, [candidate({ variety: "Garden Candlelight", stemLength: "60 cm" })]);
+
+    expect(vm.matchedOption?.productName).toBe("Rosa Ec");
+    expect(vm.matchedOption?.variety).toBe("Garden Candlelight");
+    // Supplier-facing fields are never rewritten to make the match work.
+    expect(vm.rawText).toBe("1qb Candlelight 60cm");
+    expect(vm.varietyRaw).toBe("Candlelight");
+    expect(vm.extractedSnapshot).toEqual({ varietyRaw: "Candlelight", lengthCm: 60, parserWarnings: [] });
+  });
+
+  it("25: SupplierLineMapping/USER_LINKED precedence is unchanged by Garden matching - an existing manual link is respected as-is, never re-evaluated against the Garden fallback", () => {
+    const gardenCandidate = candidate({ packagingWeightProfileId: "user-chosen", variety: "Garden Candlelight" });
+    const line = baseLine({ matchStatus: "USER_LINKED", packagingWeightProfileId: "user-chosen", varietyRaw: "Candlelight" });
+
+    const vm = buildOfferLineViewModel(line, FARM, [gardenCandidate]);
+
+    expect(vm.matchStatus).toBe("USER_LINKED");
+    expect(vm.matchedOption?.packagingWeightProfileId).toBe("user-chosen");
+    // No live re-match happened for a USER_LINKED line - matchOptions stays empty regardless of Garden fallback.
+    expect(vm.matchOptions).toEqual([]);
+  });
+});

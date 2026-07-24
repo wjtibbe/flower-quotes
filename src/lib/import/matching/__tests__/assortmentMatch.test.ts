@@ -295,6 +295,143 @@ describe("normalizeRoseProductLabel", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Assortment-only "Garden" variety fallback
+// ---------------------------------------------------------------------------
+
+describe("matchAssortment - Garden assortment-only variety fallback", () => {
+  it("11: supplier 'Candlelight' matches assortment 'Garden Candlelight'", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candlelight", stemLengthCm: 60 },
+      [candidate({ variety: "Garden Candlelight" })],
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+    expect(result.packagingWeightProfileId).toBe("profile-1");
+  });
+
+  it("12: supplier 'Candlelight' matches assortment 'Candlelight' exactly (no Garden involved)", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candlelight", stemLengthCm: 60 },
+      [candidate({ variety: "Candlelight" })],
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+  });
+
+  it("13: assortment has BOTH 'Candlelight' and 'Garden Candlelight' -> exact 'Candlelight' wins, no ambiguity", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candlelight", stemLengthCm: 60 },
+      [
+        candidate({ packagingWeightProfileId: "p-plain", variety: "Candlelight" }),
+        candidate({ packagingWeightProfileId: "p-garden", productVariantId: "variant-garden", variety: "Garden Candlelight" }),
+      ],
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+    expect(result.packagingWeightProfileId).toBe("p-plain");
+    expect(result.options).toHaveLength(1);
+  });
+
+  it("14: supplier 'Garden Candlelight' matches assortment 'Garden Candlelight' via normal exact matching", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Garden Candlelight", stemLengthCm: 60 },
+      [candidate({ variety: "Garden Candlelight" })],
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+  });
+
+  it("15: matches case-insensitively ('candlelight' vs 'Garden Candlelight')", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "candlelight", stemLengthCm: 60 },
+      [candidate({ variety: "Garden Candlelight" })],
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+  });
+
+  it("16: supplier 'Candle' does NOT match assortment 'Garden Candlelight' (no substring/partial matching)", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candle", stemLengthCm: 60 },
+      [candidate({ variety: "Garden Candlelight" })],
+    );
+    expect(result.status).toBe("UNMATCHED");
+  });
+
+  it("17: assortment variety 'Gardenia' is never modified/stripped", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Gardenia", stemLengthCm: 60 },
+      [candidate({ variety: "Gardenia" })],
+    );
+    expect(result.status).toBe("AUTO_MATCHED");
+
+    const noFallback = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "ia", stemLengthCm: 60 },
+      [candidate({ variety: "Gardenia" })],
+    );
+    expect(noFallback.status).toBe("UNMATCHED");
+  });
+
+  it("18: assortment variety 'Red Garden' is never modified/stripped (Garden is not the leading token)", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Garden", stemLengthCm: 60 },
+      [candidate({ variety: "Red Garden" })],
+    );
+    expect(result.status).toBe("UNMATCHED");
+  });
+
+  it("19: assortment variety 'Secret Garden Rose' is never modified/stripped", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Garden Rose", stemLengthCm: 60 },
+      [candidate({ variety: "Secret Garden Rose" })],
+    );
+    expect(result.status).toBe("UNMATCHED");
+  });
+
+  it("20: Garden fallback still requires the correct product - a matching variety under a different product is not matched", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Hydrangea", variety: "Candlelight", stemLengthCm: 60 },
+      [candidate({ productName: "Rosa Ec", variety: "Garden Candlelight" })],
+    );
+    expect(result.status).toBe("UNMATCHED");
+  });
+
+  it("21: Garden fallback still requires the correct length", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candlelight", stemLengthCm: 50 },
+      [candidate({ variety: "Garden Candlelight", stemLength: "60 cm" })],
+    );
+    expect(result.status).toBe("UNMATCHED");
+  });
+
+  it("22: multiple Garden-fallback candidates (no exact match, two packagings) -> AMBIGUOUS, never guessed", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candlelight", stemLengthCm: 60 },
+      [
+        candidate({ packagingWeightProfileId: "p-qb", boxType: "QB", variety: "Garden Candlelight" }),
+        candidate({ packagingWeightProfileId: "p-hb", boxType: "HB", variety: "Garden Candlelight" }),
+      ],
+    );
+    expect(result.status).toBe("AMBIGUOUS");
+    expect(result.packagingWeightProfileId).toBeNull();
+    expect(result.options).toHaveLength(2);
+  });
+
+  it("23: the canonical matched result after a Garden-fallback match remains the assortment's full 'Garden Candlelight' value, never the supplier's plain value", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: "Rosa Ec", variety: "Candlelight", stemLengthCm: 60 },
+      [candidate({ variety: "Garden Candlelight" })],
+    );
+    expect(result.options[0].variety).toBe("Garden Candlelight");
+  });
+
+  it("2I worked example: product derived (not given), supplier variety 'Candlelight', assortment 'Garden Candlelight' at 60cm -> unique AUTO/DERIVED match", () => {
+    const result = matchAssortment(
+      { farmId: FARM, productName: null, variety: "Candlelight", stemLengthCm: 60 },
+      [candidate({ productName: "Rosa Ec", variety: "Garden Candlelight", stemLength: "60 cm" })],
+    );
+    expect(result.status).toBe("DERIVED");
+    expect(result.derivedProductName).toBe("Rosa Ec");
+    expect(result.options[0].variety).toBe("Garden Candlelight");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Review-screen rebuild, section 14/26.B: which corrections invalidate a match
 // ---------------------------------------------------------------------------
 

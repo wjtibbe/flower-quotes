@@ -222,6 +222,55 @@ export function haveMatchAffectingFieldsChanged(before: MatchAffectingFields, af
 }
 
 // ---------------------------------------------------------------------------
+// Assortment-only "Garden" variety fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * "Garden" is an internal ASSORTMENT naming convention (e.g. the assortment
+ * stores "Garden Candlelight"), not something suppliers are expected to
+ * write - many farms simply offer "Candlelight". This fallback lets the
+ * deterministic matcher recognize that equivalence WITHOUT ever touching the
+ * supplier side: only an assortment candidate's variety is ever stripped of
+ * this prefix for comparison, and only as a fallback tried after an exact
+ * match has already failed (see `varietyExactMatches`/`varietyGardenMatches`
+ * below - exact always wins, never merged with fallback results). Strict
+ * leading-token rule only - "Gardenia", "Red Garden" and "Secret Garden
+ * Rose" must never be touched, so this checks for the literal prefix
+ * "garden " (a whole word followed by whitespace) on the already-normalized
+ * string, never a substring/contains check.
+ */
+const GARDEN_PREFIX = "garden ";
+
+function stripLeadingGardenPrefix(normalizedVariety: string): string | null {
+  if (!normalizedVariety.startsWith(GARDEN_PREFIX)) return null;
+  const rest = normalizedVariety.slice(GARDEN_PREFIX.length).trim();
+  return rest || null;
+}
+
+/** Candidates whose (unchanged) variety exactly equals the supplier's normalized variety. */
+function varietyExactMatches(candidates: AssortmentCandidate[], normalizedVariety: string): AssortmentCandidate[] {
+  return candidates.filter((c) => normalizeForMatching(c.variety ?? "") === normalizedVariety);
+}
+
+/** Candidates whose variety equals the supplier's normalized variety ONLY after stripping a leading "Garden " prefix from the ASSORTMENT side. */
+function varietyGardenFallbackMatches(candidates: AssortmentCandidate[], normalizedVariety: string): AssortmentCandidate[] {
+  return candidates.filter((c) => stripLeadingGardenPrefix(normalizeForMatching(c.variety ?? "")) === normalizedVariety);
+}
+
+/**
+ * Resolves which candidates count as "variety matches" for a normalized
+ * supplier variety: exact matches when any exist (exact always wins - never
+ * unioned with fallback matches, so an assortment that has BOTH "Candlelight"
+ * and "Garden Candlelight" never becomes ambiguous just because the fallback
+ * would also technically apply), otherwise the Garden-prefix fallback.
+ */
+function resolveVarietyMatches(candidates: AssortmentCandidate[], normalizedVariety: string): AssortmentCandidate[] {
+  const exact = varietyExactMatches(candidates, normalizedVariety);
+  if (exact.length > 0) return exact;
+  return varietyGardenFallbackMatches(candidates, normalizedVariety);
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
 
@@ -322,9 +371,10 @@ function matchWithKnownProduct(
   normalizedVariety: string,
   stemLengthCm: number | null,
 ): AssortmentMatchResult {
-  const productVarietyMatches = farmCandidates.filter(
-    (c) => normalizeForMatching(c.productName) === normalizedProductName && normalizeForMatching(c.variety ?? "") === normalizedVariety,
-  );
+  const productMatches = farmCandidates.filter((c) => normalizeForMatching(c.productName) === normalizedProductName);
+  // Garden fallback only ever changes variety comparison - product scope
+  // (and, below, length) still apply exactly as before.
+  const productVarietyMatches = resolveVarietyMatches(productMatches, normalizedVariety);
 
   if (stemLengthCm === null) {
     // Section 6: length is part of the required primary combination - never
@@ -380,8 +430,10 @@ function deriveProductFromVariety(
   normalizedVariety: string,
   stemLengthCm: number | null,
 ): AssortmentMatchResult {
-  const varietyMatches = farmCandidates.filter((c) => {
-    if (normalizeForMatching(c.variety ?? "") !== normalizedVariety) return false;
+  // Garden fallback only ever changes variety comparison - length still
+  // applies exactly as before, on whichever variety-matched set (exact or
+  // fallback) resulted.
+  const varietyMatches = resolveVarietyMatches(farmCandidates, normalizedVariety).filter((c) => {
     if (stemLengthCm === null) return true; // length gelijk wanneer length aanwezig is
     return parseExactStemLengthCm(c.stemLength) === stemLengthCm;
   });
