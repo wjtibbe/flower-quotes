@@ -112,6 +112,8 @@ export function buildOfferLineViewModel(
     quantity: line.quantity?.toString() ?? null,
     totalStems: line.totalStems,
     boxesAvailable: line.boxesAvailable,
+    stemsPerBox: line.stemsPerBox,
+    weightPerBoxKg: line.weightPerBoxKg?.toString() ?? null,
   });
 
   const snapshot =

@@ -63,7 +63,7 @@ vi.mock("@/lib/import", async (importOriginal) => {
 
 const { uploadFarmOffer } = await import("../actions");
 
-const VALID_FARM = { name: "Test Farm", country: "Colombia" };
+const VALID_FARM = { name: "Test Farm", country: "Colombia", defaultCurrency: "USD" };
 const VALID_LINE = {
   rawText: "Dallas 60cm 0.38",
   productGroupRaw: "Rose",
@@ -400,8 +400,8 @@ const SWEETNESS_LINE = {
 };
 
 describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
-  it("1-9: canonical packaging, backfilled quantity/unit, USD default, totalStems, and rawText/snapshot preserved", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+  it("1-9: canonical packaging, backfilled quantity/unit, supplier default currency, totalStems, and rawText/snapshot preserved", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia", defaultCurrency: "USD" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
     mockRunPastedTextImport.mockResolvedValue({
       sourceKind: "MANUAL",
@@ -430,7 +430,7 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     expect(createdLine.quantity).toBe("2");
     expect(createdLine.unit).toBe("BOXES");
     expect(createdLine.totalStems).toBe(250);
-    // 8: Colombia + price present + no explicit currency -> USD.
+    // 8: supplier defaultCurrency USD + no explicit currency -> USD.
     expect(createdLine.currency).toBe("USD");
     // 20: extractedSnapshot keeps the ORIGINAL, unfiltered parserWarnings.
     expect(createdLine.extractedSnapshot.parserWarnings).toEqual([
@@ -442,8 +442,8 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     expect(createdLine.validationWarnings ?? []).toEqual([]);
   });
 
-  it("9: an Ecuador farm also defaults missing currency to USD", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Ecuador Farm", country: "Ecuador" });
+  it("5: a supplier defaulting to EUR resolves a missing source currency to EUR", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Euro Farm", country: "Netherlands", defaultCurrency: "EUR" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
     mockRunPastedTextImport.mockResolvedValue({
       sourceKind: "MANUAL",
@@ -454,11 +454,11 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
 
     const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
-    expect(createdLine.currency).toBe("USD");
+    expect(createdLine.currency).toBe("EUR");
   });
 
-  it("10: an explicit EUR from a Colombia supplier is preserved, never overwritten", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+  it("6: an explicit EUR from a supplier defaulting to USD is preserved, never overwritten", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia", defaultCurrency: "USD" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
     mockRunPastedTextImport.mockResolvedValue({
       sourceKind: "MANUAL",
@@ -472,26 +472,23 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     expect(createdLine.currency).toBe("EUR");
   });
 
-  it("11: a non-Colombia/Ecuador farm's missing currency is NOT silently defaulted by the business rule (the warning genuinely stays unresolved)", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Dutch Farm", country: "Netherlands" });
+  it("7: an explicit USD from a supplier defaulting to EUR is preserved", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Euro Farm", country: "Netherlands", defaultCurrency: "EUR" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
     mockRunPastedTextImport.mockResolvedValue({
       sourceKind: "MANUAL",
-      rawText: "2hb Sweetness 40cm",
-      lines: [{ ...SWEETNESS_LINE, parserWarnings: ["Valuta niet vermeld in de bron - controleer bij review."] }],
+      rawText: "2hb Sweetness 40cm USD 0.16",
+      lines: [{ ...SWEETNESS_LINE, currency: "USD", parserWarnings: [] }],
     });
 
-    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm"));
+    await uploadFarmOffer({}, formDataWithText("farm-1", "2hb Sweetness 40cm USD 0.16"));
 
     const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
-    // The persisted currency column still needs SOME value (NOT NULL), but
-    // the warning must remain because the business rule genuinely did not
-    // resolve it for this country.
-    expect(createdLine.validationWarnings).toContain("Valuta niet vermeld in de bron - controleer bij review.");
+    expect(createdLine.currency).toBe("USD");
   });
 
   it("15: a genuinely unresolved field (no assortment match at all) still generates a warning/needs review", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia", defaultCurrency: "USD" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([]); // nothing to match against
     mockRunPastedTextImport.mockResolvedValue({
       sourceKind: "MANUAL",
@@ -508,8 +505,8 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     expect(createdLine.validationWarnings).toContain("stemsPerBox not stated.");
   });
 
-  it("16: a second, later import of the identical source deterministically re-matches the same profile without any SupplierLineMapping", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+  it("12/16: two consecutive imports both use the supplier default currency and the same matched profile automatically, no human confirmation", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia", defaultCurrency: "USD" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([sweetnessProfileRow()]);
     mockSupplierLineMappingFindMany.mockResolvedValue([]); // no saved mapping exists
     mockRunPastedTextImport.mockResolvedValue({
@@ -528,11 +525,12 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
       expect(created.packagingWeightProfileId).toBe("profile-sweetness");
       expect(created.stemsPerBox).toBe(125);
       expect(created.totalStems).toBe(250);
+      expect(created.currency).toBe("USD");
     }
   });
 
   it("17: an existing SupplierLineMapping still takes precedence over the deterministic engine", async () => {
-    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia" });
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia", defaultCurrency: "USD" });
     mockPackagingWeightProfileFindMany.mockResolvedValue([
       sweetnessProfileRow({ id: "profile-sweetness" }),
       sweetnessProfileRow({

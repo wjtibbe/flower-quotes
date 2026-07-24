@@ -1,4 +1,4 @@
-import { CURRENCY_NOT_STATED_WARNING } from "./provider";
+import { calculateTotalStems } from "./offerLineMapping";
 import type { ParsedOfferLine } from "./types";
 
 /**
@@ -8,9 +8,10 @@ import type { ParsedOfferLine } from "./types";
  * review should only be required when the application genuinely does not
  * know something (see the module's originating spec) - so once a value is
  * deterministically derivable from trusted application data (the matched
- * `PackagingWeightProfile`, the supplier's own country, or the line's own
- * already-extracted fields), it is filled in automatically here instead of
- * being left for a reviewer to re-type something the app already knows.
+ * `PackagingWeightProfile`, the supplier's own configured default currency,
+ * or the line's own already-extracted fields), it is filled in automatically
+ * here instead of being left for a reviewer to re-type something the app
+ * already knows.
  *
  * Nothing here ever calls Anthropic/AI - every step is pure, deterministic
  * application/database logic. Nothing here ever touches `rawText` or
@@ -30,24 +31,19 @@ import type { ParsedOfferLine } from "./types";
  *    profile is this app's own trusted assortment record for exactly this
  *    farm + product + variety + length + box type. Unmatched lines are left
  *    untouched (nothing trusted to enrich from).
- *  - Currency: an explicit source currency ALWAYS wins over any default.
- *    Only when no currency was stated AND a price is present AND the
- *    farm's country is Colombia or Ecuador, currency defaults to USD (see
- *    `resolveEffectiveCurrency`). Any other country's missing currency is
- *    left unresolved here - the existing unconditional `?? "USD"` fallback
- *    in `mapParsedOfferLineToCreateInput` still persists a valid DB value
- *    for it (the `currency` column is NOT NULL), but that fallback is NOT
- *    treated as "resolved" for warning-suppression purposes, so the
- *    reviewer still sees a warning for a country this business rule doesn't
- *    cover.
+ *  - Currency: an explicit source currency ALWAYS wins. Otherwise the
+ *    supplier's own configured `Farm.defaultCurrency` (every farm has one,
+ *    defaulting to USD) is trusted configuration and counts as RESOLVED
+ *    (see `resolveEffectiveCurrency`) - this replaces the earlier
+ *    country-based Colombia/Ecuador inference.
  *  - Quantity/unit: when the parser only ever populated the legacy
  *    `boxesAvailable` field (every current provider), quantity/unit are
  *    backfilled as `{quantity: boxesAvailable, unit: BOXES}` - the exact
  *    same assumption the review screen's own display fallback already made
  *    (see `OfferLineReviewRow.tsx`'s `effectiveQuantity`/`effectiveUnit`),
  *    now applied to the actual data so `totalStems` can be CALCULATED
- *    (`calculateTotalStems` in offerLineMapping.ts, unchanged) instead of
- *    merely display-approximated.
+ *    (`calculateTotalStems`, unchanged) instead of merely
+ *    display-approximated.
  */
 
 // ---------------------------------------------------------------------------
@@ -63,75 +59,111 @@ export interface MatchedPackagingInfo {
 }
 
 // ---------------------------------------------------------------------------
-// Currency default (Colombia/Ecuador -> USD)
+// Currency default (supplier-configured Farm.defaultCurrency)
 // ---------------------------------------------------------------------------
 
-// Farm.country is free-text (e.g. "Colombia", "Ecuador", "Netherlands" - see
-// seedData.ts) - matched case-insensitively/trimmed so "colombia"/"ECUADOR"
-// still qualify. Deliberately a fixed allowlist of exact country names, not
-// a region/currency-zone lookup - this implements exactly the two countries
-// the business rule names, nothing broader.
-const USD_DEFAULT_COUNTRIES = new Set(["colombia", "ecuador"]);
+export interface ResolveEffectiveCurrencyInput {
+  explicitCurrency: "USD" | "EUR" | null | undefined;
+  /** `Farm.defaultCurrency` - trusted supplier configuration, never inferred from country. */
+  supplierDefaultCurrency: "USD" | "EUR" | null | undefined;
+}
 
 export interface EffectiveCurrencyResult {
   /** The currency to use, or undefined when nothing deterministic resolved it. */
   currency: "USD" | "EUR" | undefined;
-  /** True only when `currency` was resolved by an explicit source value OR the Colombia/Ecuador rule - never by any later, unconditional persistence-time fallback. */
+  /** True when `currency` was resolved by an explicit source value OR the supplier's configured default. */
   resolved: boolean;
 }
 
 /**
- * Resolves the effective currency for one line (business rule, section 2 of
- * the spec). An explicitly stated source currency always wins. Otherwise,
- * for a Colombia/Ecuador farm with a stated price, defaults to USD. Any
- * other case is left unresolved (`resolved: false`) - the caller/DB layer
- * may still need SOME value to persist (`currency` is NOT NULL), but that
- * later fallback must never be mistaken for this rule having applied.
+ * Resolves the effective currency for one line: an explicitly stated source
+ * currency always wins; otherwise the supplier's configured
+ * `defaultCurrency` is trusted configuration and resolves it. Every `Farm`
+ * has a `defaultCurrency` (NOT NULL, defaults to USD) so in practice this is
+ * always resolved once a supplier is known - the `resolved: false` branch
+ * only matters for a caller with no farm at all.
  */
-export function resolveEffectiveCurrency(
-  explicitCurrency: "USD" | "EUR" | null | undefined,
-  farmCountry: string | null | undefined,
-  hasPrice: boolean,
-): EffectiveCurrencyResult {
+export function resolveEffectiveCurrency({
+  explicitCurrency,
+  supplierDefaultCurrency,
+}: ResolveEffectiveCurrencyInput): EffectiveCurrencyResult {
   if (explicitCurrency) return { currency: explicitCurrency, resolved: true };
-  const country = farmCountry?.trim().toLowerCase();
-  if (hasPrice && country && USD_DEFAULT_COUNTRIES.has(country)) {
-    return { currency: "USD", resolved: true };
-  }
+  if (supplierDefaultCurrency) return { currency: supplierDefaultCurrency, resolved: true };
   return { currency: undefined, resolved: false };
 }
 
 // ---------------------------------------------------------------------------
-// Warning cleanup - only for conditions THIS enrichment step resolved
+// Warning reconciliation - only for conditions CURRENTLY resolved
 // ---------------------------------------------------------------------------
 
-// Distinctive enough (an unusual English field name) that matching on it
-// anywhere in an AI-authored warning is safe - see the module doc's
-// packaging precedence: this is only ever applied when a matched profile
-// really did just supply a concrete stemsPerBox.
-const STEMS_PER_BOX_WARNING_RE = /stems\s*per\s*box/i;
+/**
+ * The known topics a parser/AI warning can reference. A single AI-authored
+ * sentence often combines several ("stemsPerBox not stated so price could
+ * not be derived ... currency is not stated") - every referenced topic must
+ * be currently resolved before the whole warning is considered stale.
+ */
+export type WarningTopic = "STEMS_PER_BOX" | "BOX_WEIGHT" | "PRICE" | "CURRENCY" | "TOTAL_STEMS";
 
-export interface ResolvedByEnrichment {
+// Deliberately broad-but-safe keyword matches per topic (English AI free text
+// and the app's own Dutch canned strings). Safety comes not from narrow
+// regexes but from `resolved.<topic>` only ever being true when that field
+// genuinely IS resolved on the CURRENT effective line - an unrelated warning
+// that happens to mention "prijs" is never dropped unless the price is
+// actually present now.
+const TOPIC_PATTERNS: Record<WarningTopic, RegExp> = {
+  STEMS_PER_BOX: /stems?\s*(?:per|\/)\s*box/i,
+  BOX_WEIGHT: /box\s*weight|weight\s*per\s*box|doosgewicht/i,
+  PRICE: /price|prijs/i,
+  CURRENCY: /currency|valuta/i,
+  TOTAL_STEMS: /total\s*stems|totaal(?:\s+aantal)?\s+stelen/i,
+};
+
+/** Every recognized topic a warning references - empty for an OTHER/unrecognized warning. */
+export function detectWarningTopics(warning: string): WarningTopic[] {
+  return (Object.keys(TOPIC_PATTERNS) as WarningTopic[]).filter((topic) => TOPIC_PATTERNS[topic].test(warning));
+}
+
+export interface ResolvedWarningTopics {
   stemsPerBox: boolean;
+  boxWeight: boolean;
+  price: boolean;
   currency: boolean;
+  totalStems: boolean;
+}
+
+const TOPIC_KEY: Record<WarningTopic, keyof ResolvedWarningTopics> = {
+  STEMS_PER_BOX: "stemsPerBox",
+  BOX_WEIGHT: "boxWeight",
+  PRICE: "price",
+  CURRENCY: "currency",
+  TOTAL_STEMS: "totalStems",
+};
+
+/**
+ * A warning is stale (fully resolved) only when it references AT LEAST ONE
+ * recognized topic AND every topic it references is currently resolved. An
+ * OTHER/unrecognized warning (no matched topic at all) is conservatively
+ * kept - never guessed away. A warning referencing multiple topics is only
+ * dropped once ALL of them are resolved.
+ */
+export function isWarningResolved(warning: string, resolved: ResolvedWarningTopics): boolean {
+  const topics = detectWarningTopics(warning);
+  if (topics.length === 0) return false;
+  return topics.every((topic) => resolved[TOPIC_KEY[topic]]);
 }
 
 /**
- * Drops parser warnings whose underlying condition this enrichment step has
- * just deterministically resolved (section 3 of the spec: "warnings must
- * represent current effective state"). Never touches any other warning -
- * including a genuinely still-unresolved one, or one unrelated to these two
- * specific conditions - so nothing is blindly deleted.
+ * Drops every warning from `warnings` whose underlying condition(s) are
+ * ALL currently resolved (section: "warnings must represent current
+ * effective state"). Used both at import (on the freshly enriched line) and
+ * at every review-time recomputation (`computeLineValidationMessages`, so
+ * the review screen - which always recomputes from the frozen
+ * `extractedSnapshot.parserWarnings`, never the persisted `validationWarnings`
+ * column - reflects the CURRENT effective state too, not just what was
+ * resolved at the moment of import).
  */
-export function filterResolvedEnrichmentWarnings(
-  warnings: readonly string[],
-  resolved: ResolvedByEnrichment,
-): string[] {
-  return warnings.filter((w) => {
-    if (resolved.currency && w === CURRENCY_NOT_STATED_WARNING) return false;
-    if (resolved.stemsPerBox && STEMS_PER_BOX_WARNING_RE.test(w)) return false;
-    return true;
-  });
+export function reconcileWarnings(warnings: readonly string[], resolved: ResolvedWarningTopics): string[] {
+  return warnings.filter((w) => !isWarningResolved(w, resolved));
 }
 
 // ---------------------------------------------------------------------------
@@ -141,14 +173,14 @@ export function filterResolvedEnrichmentWarnings(
 /**
  * Applies every deterministic enrichment step to one freshly matched line,
  * in order: quantity/unit backfill, canonical packaging from the matched
- * profile, the Colombia/Ecuador currency default, then warning cleanup for
- * whatever this step actually resolved. Pure - no network, no database
- * (the caller already loaded `matchedProfile`/`farmCountry`).
+ * profile, the supplier default currency, then warning reconciliation for
+ * whatever is now resolved. Pure - no network, no database (the caller
+ * already loaded `matchedProfile`/`supplierDefaultCurrency`).
  */
 export function enrichParsedOfferLine(
   line: ParsedOfferLine,
   matchedProfile: MatchedPackagingInfo | null,
-  farmCountry: string | null | undefined,
+  supplierDefaultCurrency: "USD" | "EUR" | null | undefined,
 ): ParsedOfferLine {
   let next: ParsedOfferLine = { ...line };
 
@@ -158,7 +190,6 @@ export function enrichParsedOfferLine(
   }
 
   // Canonical packaging from the matched PackagingWeightProfile.
-  const stemsPerBoxResolved = matchedProfile !== null;
   if (matchedProfile) {
     next = {
       ...next,
@@ -168,20 +199,28 @@ export function enrichParsedOfferLine(
     };
   }
 
-  // Colombia/Ecuador currency default (explicit source currency always wins - see resolveEffectiveCurrency).
-  const { currency, resolved: currencyResolved } = resolveEffectiveCurrency(
-    next.currency,
-    farmCountry,
-    Boolean(next.fobPricePerStem),
-  );
+  // Supplier default currency (explicit source currency always wins).
+  const { currency } = resolveEffectiveCurrency({
+    explicitCurrency: next.currency,
+    supplierDefaultCurrency,
+  });
   if (currency) next = { ...next, currency };
 
-  // Warning cleanup - only for exactly what was just resolved above.
+  const totalStems = calculateTotalStems({
+    quantity: next.quantity !== undefined ? Number(next.quantity) : null,
+    unit: next.unit ?? null,
+    stemsPerBox: next.stemsPerBox ?? null,
+  });
+
+  // Warning reconciliation - only for exactly what is resolved right now.
   next = {
     ...next,
-    parserWarnings: filterResolvedEnrichmentWarnings(next.parserWarnings, {
-      stemsPerBox: stemsPerBoxResolved,
-      currency: currencyResolved,
+    parserWarnings: reconcileWarnings(next.parserWarnings, {
+      stemsPerBox: next.stemsPerBox != null,
+      boxWeight: Boolean(next.weightPerBoxKg),
+      price: Boolean(next.fobPricePerStem),
+      currency: Boolean(next.currency),
+      totalStems: totalStems !== null,
     }),
   };
 

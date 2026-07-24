@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  computeLineValidationMessages,
   isPackagingProfileValidForSupplier,
   validateOfferLineForFinalization,
   validatePackagingWeightProfileSelection,
@@ -171,5 +172,109 @@ describe("validatePackagingWeightProfileSelection", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toMatch(/andere leverancier/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// computeLineValidationMessages - warning reconciliation against the CURRENT
+// effective state (fixes the review screen recomputing from the frozen,
+// unfiltered extractedSnapshot.parserWarnings on every render).
+// ---------------------------------------------------------------------------
+
+const SWEETNESS_SNAPSHOT = {
+  parserWarnings: [
+    "stemsPerBox not stated so price-per-stem could not be derived; price for this length must be resolved from the shared price table (40 cm = 0.16) but currency is not stated anywhere in the source",
+  ],
+};
+
+function sweetnessNext(overrides: Partial<FinalizationCheckInput> = {}): FinalizationCheckInput {
+  return {
+    packagingWeightProfileId: "profile-sweetness",
+    productGroupRaw: "Rosa Ec",
+    varietyRaw: "Sweetness",
+    fobPricePerStem: "0.16",
+    currency: "USD",
+    unit: "BOXES",
+    stemLengthCm: 40,
+    quantity: "2",
+    totalStems: 250,
+    stemsPerBox: 125,
+    weightPerBoxKg: "7.000",
+    ...overrides,
+  };
+}
+
+describe("computeLineValidationMessages - warning reconciliation", () => {
+  it("1: matched profile supplies stemsPerBox -> stemsPerBox warning removed", () => {
+    const { validationWarnings } = computeLineValidationMessages(
+      { parserWarnings: ["stemsPerBox not stated."] },
+      sweetnessNext(),
+    );
+    expect(validationWarnings ?? []).not.toContain("stemsPerBox not stated.");
+  });
+
+  it("2: matched profile supplies weight -> weight warning removed", () => {
+    const { validationWarnings } = computeLineValidationMessages(
+      { parserWarnings: ["box weight not stated."] },
+      sweetnessNext(),
+    );
+    expect(validationWarnings ?? []).not.toContain("box weight not stated.");
+  });
+
+  it("3: supplier defaultCurrency supplies USD -> currency warning removed", () => {
+    const { validationWarnings } = computeLineValidationMessages(
+      { parserWarnings: ["Valuta niet vermeld in de bron - controleer bij review."] },
+      sweetnessNext(),
+    );
+    expect(validationWarnings ?? []).not.toContain("Valuta niet vermeld in de bron - controleer bij review.");
+  });
+
+  it("4: price resolved from shared table -> price warning removed", () => {
+    const { validationWarnings } = computeLineValidationMessages(
+      { parserWarnings: ["price for this length must be resolved from the shared price table"] },
+      sweetnessNext(),
+    );
+    expect(validationWarnings ?? []).toEqual([]);
+  });
+
+  it("5: quantity + stemsPerBox gives totalStems -> total-stems warning removed", () => {
+    const { validationWarnings } = computeLineValidationMessages(
+      { parserWarnings: ["Totaal aantal stelen kon niet worden berekend."] },
+      sweetnessNext(),
+    );
+    expect(validationWarnings ?? []).not.toContain("Totaal aantal stelen kon niet worden berekend.");
+  });
+
+  it("6: a combined warning mentioning stemsPerBox+price+currency disappears once all three are resolved", () => {
+    const { validationWarnings } = computeLineValidationMessages(SWEETNESS_SNAPSHOT, sweetnessNext());
+    expect(validationWarnings ?? []).toEqual([]);
+  });
+
+  it("7: the combined warning REMAINS when one referenced issue is still unresolved (currency missing)", () => {
+    const { validationWarnings } = computeLineValidationMessages(
+      SWEETNESS_SNAPSHOT,
+      sweetnessNext({ currency: null }),
+    );
+    expect(validationWarnings ?? []).toEqual(
+      expect.arrayContaining([expect.stringContaining("currency is not stated")]),
+    );
+  });
+
+  it("8: an unrelated/OTHER warning remains untouched", () => {
+    const genuine = "Lengte kon niet worden geïnterpreteerd - controleer handmatig.";
+    const { validationWarnings } = computeLineValidationMessages({ parserWarnings: [genuine] }, sweetnessNext());
+    expect(validationWarnings).toContain(genuine);
+  });
+
+  it("9: extractedSnapshot's own parserWarnings array is never mutated by reconciliation", () => {
+    const snapshot = { parserWarnings: [...SWEETNESS_SNAPSHOT.parserWarnings] };
+    computeLineValidationMessages(snapshot, sweetnessNext());
+    expect(snapshot.parserWarnings).toEqual(SWEETNESS_SNAPSHOT.parserWarnings);
+  });
+
+  it("10: the exact Sweetness example produces 0 active warnings and 0 blocking errors (READY)", () => {
+    const { validationWarnings, validationErrors } = computeLineValidationMessages(SWEETNESS_SNAPSHOT, sweetnessNext());
+    expect(validationWarnings).toBeNull();
+    expect(validationErrors).toBeNull();
   });
 });

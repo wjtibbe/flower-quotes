@@ -2,15 +2,24 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { Currency } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { blockedDeleteMessage } from "@/lib/deletionMessage";
 import { isFarmHeaderRow, parseFarmRow } from "@/lib/import/farmPaste";
 
 export async function saveFarm(formData: FormData): Promise<void> {
   const id = formData.get("id") as string | null;
+  const defaultCurrencyRaw = (formData.get("defaultCurrency") as string) || "USD";
   const data = {
     name: String(formData.get("name") ?? "").trim(),
     country: String(formData.get("country") ?? "").trim(),
+    // Supplier default currency (section: "Supplier default currency") -
+    // used as the second-tier currency source for Farm Offer import
+    // enrichment, after an explicit source currency. Defaults to USD when
+    // the form somehow omits it; only USD/EUR are valid selections.
+    defaultCurrency: (Object.values(Currency) as string[]).includes(defaultCurrencyRaw)
+      ? (defaultCurrencyRaw as Currency)
+      : Currency.USD,
     originId: (formData.get("originId") as string) || null,
     notes: (formData.get("notes") as string) || null,
   };

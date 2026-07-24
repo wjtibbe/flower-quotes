@@ -45,7 +45,9 @@ export default async function FarmsPage({
                 <div className="font-medium text-gray-900">
                   {farm.name} <span className="text-gray-400 font-normal">({farm.country})</span>
                 </div>
-                <div className="text-xs text-gray-500 mt-0.5">Vertrekpunt: {farm.origin?.city ?? "-"}</div>
+                <div className="text-xs text-gray-500 mt-0.5">
+                  Vertrekpunt: {farm.origin?.city ?? "-"} · Standaardvaluta: {farm.defaultCurrency}
+                </div>
               </div>
               <div className="flex items-center gap-3">
                 <a href={`/farms?edit=${farm.id}`} className="text-xs text-brand-600 hover:underline">
@@ -132,6 +134,13 @@ export default async function FarmsPage({
                   {o.city}
                 </option>
               ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Standaardvaluta</label>
+            <select className="input" name="defaultCurrency" defaultValue={editing?.defaultCurrency ?? "USD"}>
+              <option value="USD">USD</option>
+              <option value="EUR">EUR</option>
             </select>
           </div>
           <div className="col-span-2">

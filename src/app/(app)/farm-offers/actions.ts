@@ -98,7 +98,10 @@ export async function uploadFarmOffer(_prevState: UploadFormState, formData: For
   // AI parser (section 2: "de prompt moet de gekozen leverancier meekrijgen")
   // - it is never allowed to change this choice, only to flag a suspected
   // mismatch as a parserWarning on the affected line(s).
-  const farm = await prisma.farm.findUnique({ where: { id: farmId! }, select: { name: true, country: true } });
+  const farm = await prisma.farm.findUnique({
+    where: { id: farmId! },
+    select: { name: true, country: true, defaultCurrency: true },
+  });
   if (!farm) {
     return { error: "De gekozen leverancier bestaat niet meer. Ververs de pagina en probeer het opnieuw." };
   }
@@ -185,9 +188,9 @@ export async function uploadFarmOffer(_prevState: UploadFormState, formData: For
   // concrete PackagingWeightProfile (AUTO_MATCHED/DERIVED/USER_LINKED - never
   // AMBIGUOUS/UNMATCHED), that profile's own canonical boxType/stemsPerBox/
   // weightPerBoxKg become the line's CURRENT values, quantity/unit are
-  // backfilled from the legacy boxesAvailable field when needed, and a
-  // Colombia/Ecuador farm with a stated price but no explicit currency
-  // defaults to USD - see `farmOfferEnrichment.ts` for the exact precedence.
+  // backfilled from the legacy boxesAvailable field when needed, and the
+  // supplier's own configured `defaultCurrency` resolves a missing source
+  // currency - see `farmOfferEnrichment.ts` for the exact precedence.
   // `result.lines` itself is passed to `mapParsedOfferLineToCreateInput`
   // below as `originalForSnapshot`, so `extractedSnapshot`/`rawText` always
   // keep the untouched original extraction (HB included) regardless of this
@@ -200,7 +203,7 @@ export async function uploadFarmOffer(_prevState: UploadFormState, formData: For
     const matchedPackaging: MatchedPackagingInfo | null = matchedCandidate
       ? { boxType: matchedCandidate.boxType, stemsPerBox: matchedCandidate.stemsPerBox, weightPerBoxKg: matchedCandidate.boxWeight }
       : null;
-    return enrichParsedOfferLine(line, matchedPackaging, farm.country);
+    return enrichParsedOfferLine(line, matchedPackaging, farm.defaultCurrency);
   });
 
   let farmOfferId: string;
@@ -366,6 +369,8 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
     quantity: quantityRaw,
     totalStems,
     boxesAvailable,
+    stemsPerBox,
+    weightPerBoxKg,
   });
 
   try {
@@ -448,6 +453,8 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
     quantity: line.quantity?.toString() ?? null,
     totalStems: line.totalStems,
     boxesAvailable: line.boxesAvailable,
+    stemsPerBox: profile!.stemsPerBox,
+    weightPerBoxKg: profile!.weightPerBoxKg?.toString() ?? null,
   });
 
   try {
@@ -536,6 +543,8 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
     quantity: line.quantity?.toString() ?? null,
     totalStems: line.totalStems,
     boxesAvailable: line.boxesAvailable,
+    stemsPerBox,
+    weightPerBoxKg,
   });
 
   try {

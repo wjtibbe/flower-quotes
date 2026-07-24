@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  detectWarningTopics,
   enrichParsedOfferLine,
-  filterResolvedEnrichmentWarnings,
+  isWarningResolved,
+  reconcileWarnings,
   resolveEffectiveCurrency,
   type MatchedPackagingInfo,
+  type ResolvedWarningTopics,
 } from "../farmOfferEnrichment";
-import { CURRENCY_NOT_STATED_WARNING } from "../provider";
 import type { ParsedOfferLine } from "../types";
 
 function line(overrides: Partial<ParsedOfferLine> = {}): ParsedOfferLine {
@@ -27,72 +29,106 @@ function line(overrides: Partial<ParsedOfferLine> = {}): ParsedOfferLine {
 
 const SWEETNESS_PROFILE: MatchedPackagingInfo = { boxType: "QB", stemsPerBox: 125, weightPerBoxKg: "7.000" };
 
-describe("resolveEffectiveCurrency - Colombia/Ecuador USD default", () => {
-  it("Colombia + missing currency + price present -> USD, resolved", () => {
-    expect(resolveEffectiveCurrency(undefined, "Colombia", true)).toEqual({ currency: "USD", resolved: true });
+function resolved(overrides: Partial<ResolvedWarningTopics> = {}): ResolvedWarningTopics {
+  return { stemsPerBox: false, boxWeight: false, price: false, currency: false, totalStems: false, ...overrides };
+}
+
+describe("resolveEffectiveCurrency - supplier defaultCurrency", () => {
+  it("supplier default USD resolves a missing source currency", () => {
+    expect(resolveEffectiveCurrency({ explicitCurrency: undefined, supplierDefaultCurrency: "USD" })).toEqual({
+      currency: "USD",
+      resolved: true,
+    });
   });
 
-  it("Ecuador + missing currency + price present -> USD, resolved", () => {
-    expect(resolveEffectiveCurrency(undefined, "Ecuador", true)).toEqual({ currency: "USD", resolved: true });
+  it("supplier default EUR resolves a missing source currency", () => {
+    expect(resolveEffectiveCurrency({ explicitCurrency: undefined, supplierDefaultCurrency: "EUR" })).toEqual({
+      currency: "EUR",
+      resolved: true,
+    });
   });
 
-  it("is case-insensitive/trimmed for the country name", () => {
-    expect(resolveEffectiveCurrency(undefined, "colombia", true)).toEqual({ currency: "USD", resolved: true });
-    expect(resolveEffectiveCurrency(undefined, " ECUADOR ", true)).toEqual({ currency: "USD", resolved: true });
+  it("an explicit EUR from a supplier defaulting to USD is preserved, never overwritten", () => {
+    expect(resolveEffectiveCurrency({ explicitCurrency: "EUR", supplierDefaultCurrency: "USD" })).toEqual({
+      currency: "EUR",
+      resolved: true,
+    });
   });
 
-  it("an explicit EUR from a Colombia/Ecuador supplier is preserved, never overwritten", () => {
-    expect(resolveEffectiveCurrency("EUR", "Colombia", true)).toEqual({ currency: "EUR", resolved: true });
-    expect(resolveEffectiveCurrency("EUR", "Ecuador", true)).toEqual({ currency: "EUR", resolved: true });
+  it("an explicit USD from a supplier defaulting to EUR is preserved", () => {
+    expect(resolveEffectiveCurrency({ explicitCurrency: "USD", supplierDefaultCurrency: "EUR" })).toEqual({
+      currency: "USD",
+      resolved: true,
+    });
   });
 
-  it("an explicit USD is preserved (not merely re-derived from the rule)", () => {
-    expect(resolveEffectiveCurrency("USD", "Colombia", true)).toEqual({ currency: "USD", resolved: true });
-  });
-
-  it("does not default for a non-Colombia/Ecuador country", () => {
-    expect(resolveEffectiveCurrency(undefined, "Netherlands", true)).toEqual({ currency: undefined, resolved: false });
-  });
-
-  it("does not default when there is no price at all, even for Colombia/Ecuador", () => {
-    expect(resolveEffectiveCurrency(undefined, "Colombia", false)).toEqual({ currency: undefined, resolved: false });
-  });
-
-  it("does not default when the farm country is unknown/missing", () => {
-    expect(resolveEffectiveCurrency(undefined, null, true)).toEqual({ currency: undefined, resolved: false });
-    expect(resolveEffectiveCurrency(undefined, undefined, true)).toEqual({ currency: undefined, resolved: false });
+  it("is unresolved when neither an explicit currency nor a supplier default exists", () => {
+    expect(resolveEffectiveCurrency({ explicitCurrency: undefined, supplierDefaultCurrency: undefined })).toEqual({
+      currency: undefined,
+      resolved: false,
+    });
   });
 });
 
-describe("filterResolvedEnrichmentWarnings", () => {
-  it("drops the exact currency-not-stated warning when currency is resolved", () => {
-    const out = filterResolvedEnrichmentWarnings([CURRENCY_NOT_STATED_WARNING], { stemsPerBox: false, currency: true });
-    expect(out).toEqual([]);
+describe("detectWarningTopics", () => {
+  it("detects a single topic", () => {
+    expect(detectWarningTopics("stemsPerBox not stated.")).toEqual(["STEMS_PER_BOX"]);
+    expect(detectWarningTopics("Valuta niet vermeld in de bron - controleer bij review.")).toEqual(["CURRENCY"]);
   });
 
-  it("keeps the currency warning when currency is NOT resolved", () => {
-    const out = filterResolvedEnrichmentWarnings([CURRENCY_NOT_STATED_WARNING], { stemsPerBox: false, currency: false });
-    expect(out).toEqual([CURRENCY_NOT_STATED_WARNING]);
+  it("detects every topic referenced in a combined AI sentence", () => {
+    const combined =
+      "stemsPerBox not stated so price-per-stem could not be derived; price for this length must be resolved from the shared price table (40 cm = 0.16) but currency is not stated anywhere in the source";
+    const topics = detectWarningTopics(combined);
+    expect(topics).toContain("STEMS_PER_BOX");
+    expect(topics).toContain("PRICE");
+    expect(topics).toContain("CURRENCY");
   });
 
-  it("drops an AI-authored 'stems per box' warning once stemsPerBox is resolved", () => {
-    const out = filterResolvedEnrichmentWarnings(["stemsPerBox not stated."], { stemsPerBox: true, currency: false });
-    expect(out).toEqual([]);
+  it("returns an empty array for an OTHER/unrecognized warning", () => {
+    expect(detectWarningTopics("Lengte kon niet worden geïnterpreteerd - controleer handmatig.")).toEqual([]);
+  });
+});
+
+describe("isWarningResolved / reconcileWarnings", () => {
+  it("a single-topic warning is resolved once that topic is resolved", () => {
+    expect(isWarningResolved("stemsPerBox not stated.", resolved({ stemsPerBox: true }))).toBe(true);
+    expect(isWarningResolved("stemsPerBox not stated.", resolved({ stemsPerBox: false }))).toBe(false);
   });
 
-  it("keeps a genuinely unresolved, unrelated warning untouched", () => {
+  it("a combined warning is resolved ONLY once EVERY referenced topic is resolved", () => {
+    const combined =
+      "stemsPerBox not stated so price-per-stem could not be derived; price for this length must be resolved from the shared price table (40 cm = 0.16) but currency is not stated anywhere in the source";
+    expect(isWarningResolved(combined, resolved({ stemsPerBox: true, price: true, currency: true }))).toBe(true);
+    // one referenced issue (currency) still unresolved -> the whole warning stays
+    expect(isWarningResolved(combined, resolved({ stemsPerBox: true, price: true, currency: false }))).toBe(false);
+  });
+
+  it("an OTHER/unrecognized warning is never resolved, no matter what's resolved", () => {
     const genuine = "Lengte kon niet worden geïnterpreteerd - controleer handmatig.";
-    const out = filterResolvedEnrichmentWarnings([genuine], { stemsPerBox: true, currency: true });
+    expect(isWarningResolved(genuine, resolved({ stemsPerBox: true, boxWeight: true, price: true, currency: true, totalStems: true }))).toBe(
+      false,
+    );
+  });
+
+  it("reconcileWarnings drops only the resolved warnings, keeping unrelated ones", () => {
+    const genuine = "Lengte kon niet worden geïnterpreteerd - controleer handmatig.";
+    const out = reconcileWarnings(["stemsPerBox not stated.", genuine], resolved({ stemsPerBox: true }));
     expect(out).toEqual([genuine]);
+  });
+
+  it("box weight and total stems topics resolve independently", () => {
+    expect(isWarningResolved("box weight not stated.", resolved({ boxWeight: true }))).toBe(true);
+    expect(isWarningResolved("Totaal aantal stelen kon niet worden berekend.", resolved({ totalStems: true }))).toBe(true);
   });
 });
 
 describe("enrichParsedOfferLine - the Sweetness example end to end", () => {
-  it("applies canonical packaging, backfills quantity/unit, defaults currency, and cleans up resolved warnings", () => {
+  it("applies canonical packaging, backfills quantity/unit, resolves currency via supplier default, and cleans up resolved warnings", () => {
     const input = line({
-      parserWarnings: ["stemsPerBox not stated.", CURRENCY_NOT_STATED_WARNING],
+      parserWarnings: ["stemsPerBox not stated.", "Valuta niet vermeld in de bron - controleer bij review."],
     });
-    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "Colombia");
+    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "USD");
 
     expect(out.boxType).toBe("QB");
     expect(out.stemsPerBox).toBe(125);
@@ -103,39 +139,37 @@ describe("enrichParsedOfferLine - the Sweetness example end to end", () => {
     expect(out.parserWarnings).toEqual([]);
   });
 
+  it("drops a combined warning once every referenced topic is resolved", () => {
+    const combined =
+      "stemsPerBox not stated so price-per-stem could not be derived; price for this length must be resolved from the shared price table (40 cm = 0.16) but currency is not stated anywhere in the source";
+    const input = line({ parserWarnings: [combined] });
+    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "USD");
+    expect(out.parserWarnings).toEqual([]);
+  });
+
   it("never mutates rawText", () => {
-    const input = line();
-    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "Colombia");
+    const out = enrichParsedOfferLine(line(), SWEETNESS_PROFILE, "USD");
     expect(out.rawText).toBe("2hb Sweetness 40cm");
   });
 
   it("leaves an unmatched line's packaging fields untouched (nothing trusted to enrich from)", () => {
     const input = line({ boxType: "HB", stemsPerBox: undefined, weightPerBoxKg: undefined });
-    const out = enrichParsedOfferLine(input, null, "Colombia");
+    const out = enrichParsedOfferLine(input, null, "USD");
     expect(out.stemsPerBox).toBeUndefined();
     expect(out.weightPerBoxKg).toBeUndefined();
-    // boxType HB->QB is a SEPARATE, pre-existing normalization applied later
-    // in mapParsedOfferLineToCreateInput - this function does not duplicate it.
     expect(out.boxType).toBe("HB");
   });
 
-  it("does not backfill quantity/unit when quantity/unit were already explicit", () => {
+  it("preserves an explicit EUR even when the supplier default is USD", () => {
+    const input = line({ currency: "EUR" });
+    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "USD");
+    expect(out.currency).toBe("EUR");
+  });
+
+  it("does not backfill quantity/unit when already explicit", () => {
     const input = line({ quantity: "5", unit: "STEMS", boxesAvailable: 2 });
-    const out = enrichParsedOfferLine(input, null, "Colombia");
+    const out = enrichParsedOfferLine(input, null, "USD");
     expect(out.quantity).toBe("5");
     expect(out.unit).toBe("STEMS");
-  });
-
-  it("does not default currency for a non-Colombia/Ecuador farm - the warning stays for genuine review", () => {
-    const input = line({ parserWarnings: [CURRENCY_NOT_STATED_WARNING] });
-    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "Netherlands");
-    expect(out.currency).toBeUndefined();
-    expect(out.parserWarnings).toContain(CURRENCY_NOT_STATED_WARNING);
-  });
-
-  it("preserves an explicit EUR for a Colombia farm", () => {
-    const input = line({ currency: "EUR" });
-    const out = enrichParsedOfferLine(input, SWEETNESS_PROFILE, "Colombia");
-    expect(out.currency).toBe("EUR");
   });
 });

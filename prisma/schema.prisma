@@ -58,6 +58,13 @@ model Farm {
   id        String   @id @default(uuid())
   name      String
   country   String
+  // Supplier-level default currency (section: "Supplier default currency").
+  // Used by Farm Offer import enrichment as the SECOND-tier currency source
+  // (after an explicit source currency, before "unresolved") - replaces the
+  // earlier country-based Colombia/Ecuador inference. Every existing and
+  // newly created supplier defaults to USD; a user can change it in the
+  // supplier edit screen.
+  defaultCurrency Currency @default(USD)
   originId  String?
   notes     String?
   createdAt DateTime @default(now())

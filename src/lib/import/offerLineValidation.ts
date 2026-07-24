@@ -1,5 +1,6 @@
 import type { OfferUnitLike } from "./types";
 import { mergeValidationWarnings, normalizeValidationMessages, readValidationMessages } from "./offerLineMapping";
+import { reconcileWarnings } from "./farmOfferEnrichment";
 
 /**
  * Pure, database-independent helpers for a *future* confirm/finalization
@@ -42,6 +43,16 @@ export interface FinalizationCheckInput {
    * behavior unchanged.
    */
   boxesAvailable?: number | null;
+  /**
+   * Current effective packaging (section: warning reconciliation) - used
+   * ONLY to decide whether a frozen parser warning about a missing
+   * stemsPerBox/box weight is now stale, never to add a new blocking
+   * check (stemsPerBox/weight are not required for finalization). Optional
+   * so every existing caller/test that doesn't pass them keeps its current
+   * behavior unchanged.
+   */
+  stemsPerBox?: number | null;
+  weightPerBoxKg?: string | number | null;
 }
 
 export interface FinalizationValidationResult {
@@ -123,13 +134,31 @@ export interface ComputedLineValidationMessages {
  * warnings preserved in `extractedSnapshot` (section 18) - never the other
  * way around, and `validationErrors` is always the fresh set, never merged
  * with a stale persisted value (a resolved error must actually disappear).
+ *
+ * The frozen `extractedSnapshot.parserWarnings` are themselves reconciled
+ * against `next` (`reconcileWarnings`, farmOfferEnrichment.ts) BEFORE the
+ * merge: a warning whose every referenced topic (stemsPerBox/box weight/
+ * price/currency/total stems) is resolved on the CURRENT effective line -
+ * e.g. by a matched `PackagingWeightProfile` or the supplier's configured
+ * default currency - no longer represents a real problem, even though the
+ * original extraction genuinely didn't state it. This runs on every call
+ * (display AND save), not just at import time, so the review screen never
+ * shows a warning the app has already resolved. `extractedSnapshot` itself
+ * is never mutated - only the merged/returned `validationWarnings`.
  */
 export function computeLineValidationMessages(
   extractedSnapshot: unknown,
   next: FinalizationCheckInput,
 ): ComputedLineValidationMessages {
   const snapshot = extractedSnapshot && typeof extractedSnapshot === "object" ? (extractedSnapshot as Record<string, unknown>) : null;
-  const parserWarnings = readValidationMessages(snapshot?.parserWarnings);
+  const rawParserWarnings = readValidationMessages(snapshot?.parserWarnings);
+  const parserWarnings = reconcileWarnings(rawParserWarnings, {
+    stemsPerBox: isPresent(next.stemsPerBox),
+    boxWeight: isPresent(next.weightPerBoxKg),
+    price: isPresent(next.fobPricePerStem),
+    currency: isPresent(next.currency),
+    totalStems: next.totalStems !== null && next.totalStems !== undefined,
+  });
   const { errors, warnings } = validateOfferLineForFinalization(next);
   return {
     validationWarnings: mergeValidationWarnings(parserWarnings, warnings),
