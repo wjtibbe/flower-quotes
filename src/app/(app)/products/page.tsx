@@ -5,6 +5,9 @@ import { variantLabel } from "@/lib/variantLabel";
 import AssortmentTable, { type AssortmentRow } from "./AssortmentTable";
 import ConfirmButton from "@/components/ConfirmButton";
 import { addProductAlias, removeProductAlias, deleteVariant } from "./actions";
+import { loadAssortmentPage } from "./assortmentQuery";
+import { buildAssortmentPageHref } from "./assortmentPageLinks";
+import { ALLOWED_PAGE_SIZES, parsePageParam, parsePageSizeParam } from "@/lib/pagination";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +19,8 @@ interface Filters {
   box?: string;
   weight?: string;
   q?: string;
+  page?: string;
+  pageSize?: string;
   msg?: string;
   err?: string;
   created?: string;
@@ -25,73 +30,40 @@ interface Filters {
 }
 
 export default async function AssortmentPage({ searchParams }: { searchParams: Filters }) {
-  const [profiles, farms, variants, products] = await Promise.all([
-    prisma.packagingWeightProfile.findMany({
-      include: { farm: true, productVariant: { include: { product: true } } },
-      orderBy: [{ createdAt: "asc" }],
-    }),
-    prisma.farm.findMany({ orderBy: { name: "asc" } }),
-    prisma.productVariant.findMany({
-      // _count instead of loading every link row again (the full weightProfiles
-      // are only needed to know which variants are unlinked); much lighter with
-      // a large assortment.
-      include: { product: true, _count: { select: { weightProfiles: true } } },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.product.findMany({
-      orderBy: { name: "asc" },
-      include: { aliases: true, variants: { orderBy: { createdAt: "asc" } } },
-    }),
-  ]);
+  const requestedPage = parsePageParam(searchParams.page);
+  const pageSize = parsePageSizeParam(searchParams.pageSize);
 
-  const contains = (haystack: string | null | undefined, needle: string) =>
-    (haystack ?? "").toLowerCase().includes(needle.toLowerCase());
+  const [{ rows: profiles, pagination }, farms, variants, products, boxOptionRows, weightOptionRows] =
+    await Promise.all([
+      loadAssortmentPage(searchParams, requestedPage, pageSize),
+      prisma.farm.findMany({ orderBy: { name: "asc" } }),
+      prisma.productVariant.findMany({
+        // _count instead of loading every link row again (the full weightProfiles
+        // are only needed to know which variants are unlinked); much lighter with
+        // a large assortment.
+        include: { product: true, _count: { select: { weightProfiles: true } } },
+        orderBy: { createdAt: "asc" },
+      }),
+      prisma.product.findMany({
+        orderBy: { name: "asc" },
+        include: { aliases: true, variants: { orderBy: { createdAt: "asc" } } },
+      }),
+      // Small, bounded-size lookups for the filter dropdowns (section D: not
+      // one query per row) - independent of how many assortment rows exist.
+      prisma.packagingWeightProfile.findMany({ distinct: ["boxType"], select: { boxType: true }, orderBy: { boxType: "asc" } }),
+      prisma.packagingWeightProfile.findMany({ distinct: ["weightPerBoxKg"], select: { weightPerBoxKg: true } }),
+    ]);
 
-  const rows = profiles.filter((p) => {
-    const v = p.productVariant;
-    if (searchParams.farmId && p.farmId !== searchParams.farmId) return false;
-    if (searchParams.product && v.product.name !== searchParams.product) return false;
-    if (searchParams.variety && !contains(v.variety, searchParams.variety)) return false;
-    if (searchParams.length && !contains(v.stemLength, searchParams.length)) return false;
-    if (searchParams.box && p.boxType !== searchParams.box) return false;
-    if (searchParams.weight && p.weightPerBoxKg.toString() !== searchParams.weight) return false;
-    if (searchParams.q) {
-      const target = [
-        p.farm.name,
-        v.product.name,
-        v.variety,
-        v.stemLength,
-        v.color,
-        v.grade,
-        p.boxType,
-        p.supplierCode,
-        p.notes,
-      ]
-        .filter(Boolean)
-        .join(" ");
-      if (!contains(target, searchParams.q)) return false;
-    }
-    return true;
-  });
-
-  const productOptions = [...new Set(profiles.map((p) => p.productVariant.product.name))].sort();
-  const boxOptions = [...new Set(profiles.map((p) => p.boxType))].sort();
-  const weightOptions = [...new Set(profiles.map((p) => p.weightPerBoxKg.toString()))].sort(
-    (a, b) => Number(a) - Number(b),
-  );
+  const productOptions = products.map((p) => p.name);
+  const boxOptions = boxOptionRows.map((r) => r.boxType);
+  const weightOptions = weightOptionRows
+    .map((r) => r.weightPerBoxKg.toString())
+    .sort((a, b) => Number(a) - Number(b));
   const unlinkedVariants = variants.filter((v) => v._count.weightProfiles === 0);
 
-  // Cap how many rows the interactive client table renders. With a large
-  // assortment (many thousands of supplier links) rendering every row as a
-  // checkbox row makes the page unresponsive; the filters above narrow the set,
-  // and this keeps the page snappy meanwhile.
-  const RENDER_LIMIT = 500;
-  const totalRows = rows.length;
-  const cappedRows = rows.slice(0, RENDER_LIMIT);
-
-  // Serialize the filtered rows to plain data for the client table (no Decimal
-  // / Date instances cross the server->client boundary).
-  const tableRows: AssortmentRow[] = cappedRows.map((p) => ({
+  // Serialize the current page's rows to plain data for the client table (no
+  // Decimal / Date instances cross the server->client boundary).
+  const tableRows: AssortmentRow[] = profiles.map((p) => ({
     id: p.id,
     farmId: p.farmId,
     farmName: p.farm.name,
@@ -107,6 +79,8 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
     notes: p.notes,
   }));
   const farmOptions = farms.map((f) => ({ id: f.id, name: f.name }));
+
+  const pageLinkParams = { ...searchParams, pageSize: String(pagination.pageSize) };
 
   return (
     <div className="space-y-4">
@@ -190,7 +164,7 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           <input name="variety" defaultValue={searchParams.variety ?? ""} className="input py-1 w-32" />
         </div>
         <div>
-          <label className="label">Lengte</label>
+          <label className="label">Lengte (cm)</label>
           <input name="length" defaultValue={searchParams.length ?? ""} className="input py-1 w-24" />
         </div>
         <div>
@@ -219,16 +193,29 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           <label className="label">Zoeken</label>
           <input name="q" defaultValue={searchParams.q ?? ""} placeholder="Vrij zoeken..." className="input py-1" />
         </div>
+        <div>
+          <label className="label">Rijen per pagina</label>
+          <select name="pageSize" defaultValue={String(pagination.pageSize)} className="input py-1 w-20">
+            {ALLOWED_PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
         <button className="btn-secondary">Filteren</button>
       </form>
 
-      {totalRows > RENDER_LIMIT && (
-        <div className="card p-3 bg-amber-50 border-amber-200 text-sm text-amber-800">
-          {totalRows} regels gevonden; de eerste {RENDER_LIMIT} worden getoond. Gebruik de filters hierboven om te
-          verfijnen.
-        </div>
-      )}
+      <div className="flex items-center justify-between text-sm text-gray-500">
+        <span>{pagination.totalCount} assortimentregel(s) gevonden</span>
+        <PaginationControls pagination={pagination} linkParams={pageLinkParams} />
+      </div>
+
       <AssortmentTable rows={tableRows} farms={farmOptions} />
+
+      <div className="flex justify-end">
+        <PaginationControls pagination={pagination} linkParams={pageLinkParams} />
+      </div>
 
       {unlinkedVariants.length > 0 && (
         <div className="card p-4">
@@ -288,6 +275,37 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           ))}
         </div>
       </details>
+    </div>
+  );
+}
+
+function PaginationControls({
+  pagination,
+  linkParams,
+}: {
+  pagination: { page: number; totalPages: number };
+  linkParams: Filters;
+}) {
+  const { page, totalPages } = pagination;
+  return (
+    <div className="flex items-center gap-3 text-sm">
+      {page <= 1 ? (
+        <span className="text-gray-300">Vorige</span>
+      ) : (
+        <Link href={buildAssortmentPageHref(linkParams, page - 1)} className="text-brand-600 hover:underline">
+          Vorige
+        </Link>
+      )}
+      <span className="text-gray-500">
+        Pagina {page} van {totalPages}
+      </span>
+      {page >= totalPages ? (
+        <span className="text-gray-300">Volgende</span>
+      ) : (
+        <Link href={buildAssortmentPageHref(linkParams, page + 1)} className="text-brand-600 hover:underline">
+          Volgende
+        </Link>
+      )}
     </div>
   );
 }

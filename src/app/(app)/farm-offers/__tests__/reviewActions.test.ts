@@ -329,6 +329,45 @@ describe("createAssortmentItemFromOfferLine", () => {
     expect(mockProductFindFirst).not.toHaveBeenCalled();
   });
 
+  it("8: normalizes a free-text length ('60 cm') to the canonical numeric string ('60') before creating the assortment item", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine({ matchStatus: "UNMATCHED", packagingWeightProfileId: null }));
+    mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
+    mockProductVariantFindFirst.mockResolvedValue(null);
+    mockProductVariantCreate.mockResolvedValue({ id: "variant-1", variety: "Dallas", stemLength: "60" });
+    mockPackagingWeightProfileFindFirst.mockResolvedValue(null);
+    mockPackagingWeightProfileCreate.mockResolvedValue({
+      id: "brand-new-profile",
+      boxType: "QB",
+      stemsPerBox: 100,
+      weightPerBoxKg: { toString: () => "8.000" },
+    });
+
+    await createAssortmentItemFromOfferLine("line-1", createFormData({ stemLength: "60 cm" }));
+
+    expect(mockProductVariantCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ stemLength: "60" }) }),
+    );
+  });
+
+  it("rejects a range as one profile length instead of guessing, without touching the database", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine({ matchStatus: "UNMATCHED", packagingWeightProfileId: null }));
+
+    const result = await createAssortmentItemFromOfferLine("line-1", createFormData({ stemLength: "40-60" }));
+
+    expect(result.ok).toBe(false);
+    expect(mockProductFindFirst).not.toHaveBeenCalled();
+    expect(mockProductVariantCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects non-numeric length text instead of guessing", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine({ matchStatus: "UNMATCHED", packagingWeightProfileId: null }));
+
+    const result = await createAssortmentItemFromOfferLine("line-1", createFormData({ stemLength: "abc" }));
+
+    expect(result.ok).toBe(false);
+    expect(mockProductFindFirst).not.toHaveBeenCalled();
+  });
+
   it("never accepts a different supplier - the form has no farmId field, the line's own farm is always used", async () => {
     mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });

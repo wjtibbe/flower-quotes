@@ -238,10 +238,10 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
       aliases: { create: [{ alias: "Roses" }] },
       variants: {
         create: [
-          { variety: "Be Sweet", stemLength: "70 cm" },
-          { variety: "Explorer", stemLength: "70 cm" },
+          { variety: "Be Sweet", stemLength: "70" },
+          { variety: "Explorer", stemLength: "70" },
           { variety: "Freedom" },
-          { variety: "Vendela", stemLength: "60 cm" },
+          { variety: "Vendela", stemLength: "60" },
           { variety: "Mondial" },
           { variety: "Pink Mondial" },
         ],

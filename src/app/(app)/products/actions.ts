@@ -15,6 +15,7 @@ import { randomUUID } from "node:crypto";
 import { blockedDeleteMessage } from "@/lib/deletionMessage";
 import { MAX_BULK } from "@/lib/bulkIds";
 import type { ActionResult } from "@/lib/actionResult";
+import { normalizeAssortmentStemLength } from "@/lib/assortmentLength";
 import {
   isHeaderRow,
   parseAssortmentPasteRow,
@@ -160,8 +161,18 @@ export async function createCentralProduct(formData: FormData): Promise<void> {
   const name = norm(formData.get("name"));
   const productGroup = norm(formData.get("productGroup")) ?? name;
   const variety = norm(formData.get("variety"));
-  const stemLength = norm(formData.get("stemLength"));
+  const stemLengthRaw = norm(formData.get("stemLength"));
   if (!name) throw new Error("Product is verplicht");
+
+  // Canonical numeric assortment length (never "60 cm") - normalized at this
+  // shared create boundary rather than trusted as typed, same rule as every
+  // other assortment create/edit path.
+  let stemLength: string | null = null;
+  if (stemLengthRaw) {
+    const normalized = normalizeAssortmentStemLength(stemLengthRaw);
+    if (!normalized.ok) throw new Error(normalized.error);
+    stemLength = normalized.value;
+  }
 
   let product = await prisma.product.findFirst({
     where: { name: { equals: name, mode: "insensitive" } },
@@ -240,11 +251,24 @@ export async function bulkAddAssortment(formData: FormData): Promise<void> {
     const weightPerBoxKg = cols[3] || defaultWeightPerBoxKg;
     const supplierCode = cols[4] || null;
     const notes = cols[5] || null;
-    const stemLength = cols[6] || defaultStemLength;
+    const stemLengthRaw = cols[6] || defaultStemLength;
 
     if (!variety || !Number.isFinite(stemsPerBox) || stemsPerBox <= 0 || !weightPerBoxKg) {
       invalid++;
       continue;
+    }
+
+    // Canonical numeric assortment length - a row with an unparseable length
+    // (text/range/decimal) is skipped like any other invalid row, never
+    // silently guessed.
+    let stemLength: string | null = null;
+    if (stemLengthRaw) {
+      const normalized = normalizeAssortmentStemLength(stemLengthRaw);
+      if (!normalized.ok) {
+        invalid++;
+        continue;
+      }
+      stemLength = normalized.value;
     }
 
     let variant = await prisma.productVariant.findFirst({
@@ -358,6 +382,18 @@ export async function bulkAddAssortmentMultiSupplier(formData: FormData): Promis
       continue;
     }
 
+    // Canonical numeric assortment length - a row with an unparseable length
+    // is skipped like any other invalid row (section A2).
+    let stemLength: string | null = null;
+    if (row.stemLength) {
+      const normalizedLength = normalizeAssortmentStemLength(row.stemLength);
+      if (!normalizedLength.ok) {
+        invalid++;
+        continue;
+      }
+      stemLength = normalizedLength.value;
+    }
+
     let productId = productIdByName.get(split.productName.toLowerCase());
     if (!productId) {
       productId = randomUUID();
@@ -365,12 +401,12 @@ export async function bulkAddAssortmentMultiSupplier(formData: FormData): Promis
       newProducts.push({ id: productId, name: split.productName, productGroup: split.productName });
     }
 
-    const vKey = variantKey(productId, split.variety, row.stemLength);
+    const vKey = variantKey(productId, split.variety, stemLength);
     let variantId = variantIdByKey.get(vKey);
     if (!variantId) {
       variantId = randomUUID();
       variantIdByKey.set(vKey, variantId);
-      newVariants.push({ id: variantId, productId, variety: split.variety, stemLength: row.stemLength });
+      newVariants.push({ id: variantId, productId, variety: split.variety, stemLength });
     }
 
     const lKey = linkKey(farm.id, variantId, row.boxType, row.stemsPerBox);
@@ -435,20 +471,87 @@ export async function addSupplierLink(formData: FormData): Promise<void> {
   revalidatePath("/weight-profiles");
 }
 
-/** Updates an existing supplier link in place. */
-export async function updateSupplierLink(id: string, formData: FormData): Promise<void> {
+/**
+ * Updates an existing supplier link in place from the Assortiment overview's
+ * per-row "Bewerken" form. Also allows editing Variety/Length (Part B) -
+ * BOTH live on the shared central `ProductVariant`, which may be referenced
+ * by other suppliers/packagings, so this row is never blindly renamed onto
+ * it. Instead: look up (or create) the `ProductVariant` for this row's
+ * product + the NEW variety/length (keeping color/grade/treatment exactly as
+ * they already are on this row), then re-link only THIS profile to it -
+ * every other row still pointing at the original variant is completely
+ * unaffected. Returns an `ActionResult` (rather than throwing) so a
+ * would-be-duplicate result can be reported back to the user instead of
+ * silently creating an ambiguous second row for the same article.
+ */
+export async function updateSupplierLink(id: string, formData: FormData): Promise<ActionResult> {
   const stemsPerBox = parseInt(String(formData.get("stemsPerBox") ?? ""), 10);
   const weightPerBoxKg = norm(formData.get("weightPerBoxKg"));
   if (!Number.isFinite(stemsPerBox) || stemsPerBox <= 0 || !weightPerBoxKg) {
-    throw new Error("Stelen per doos en doosgewicht zijn verplicht");
+    return { ok: false, message: "Stelen per doos en doosgewicht zijn verplicht." };
+  }
+
+  const varietyRaw = norm(formData.get("variety"));
+  const stemLengthRaw = norm(formData.get("stemLength"));
+  if (!varietyRaw) return { ok: false, message: "Variety is verplicht." };
+  if (!stemLengthRaw) return { ok: false, message: "Lengte is verplicht." };
+  const normalizedLength = normalizeAssortmentStemLength(stemLengthRaw);
+  if (!normalizedLength.ok) return { ok: false, message: normalizedLength.error };
+  const stemLength = normalizedLength.value;
+
+  const farmId = norm(formData.get("farmId"));
+  const boxType = norm(formData.get("boxType")) ?? "QB";
+
+  const existing = await prisma.packagingWeightProfile.findUnique({
+    where: { id },
+    include: { productVariant: true },
+  });
+  if (!existing) return { ok: false, message: "Dit artikel bestaat niet meer. Ververs de pagina." };
+
+  let productVariantId = existing.productVariantId;
+  const varietyChanged = varietyRaw.toLowerCase() !== (existing.productVariant.variety ?? "").toLowerCase();
+  const lengthChanged = stemLength.toLowerCase() !== (existing.productVariant.stemLength ?? "").toLowerCase();
+
+  if (varietyChanged || lengthChanged) {
+    const { productId, color, grade, treatment } = existing.productVariant;
+    let targetVariant = await prisma.productVariant.findFirst({
+      where: {
+        productId,
+        variety: { equals: varietyRaw, mode: "insensitive" },
+        stemLength: { equals: stemLength, mode: "insensitive" },
+        color,
+        grade,
+        treatment,
+      },
+    });
+    if (!targetVariant) {
+      targetVariant = await prisma.productVariant.create({
+        data: { productId, variety: varietyRaw, stemLength, color, grade, treatment },
+      });
+    }
+    productVariantId = targetVariant.id;
+  }
+
+  // Duplicate safety (Part B4): the resulting identity (supplier + variant +
+  // packaging) must not collide with a DIFFERENT existing row.
+  const resolvedFarmId = farmId ?? existing.farmId;
+  const duplicate = await prisma.packagingWeightProfile.findFirst({
+    where: { id: { not: id }, farmId: resolvedFarmId, productVariantId, boxType, stemsPerBox },
+  });
+  if (duplicate) {
+    return {
+      ok: false,
+      message: "Er bestaat al een assortimentartikel met deze leverancier, variëteit, lengte en verpakking.",
+    };
   }
 
   await prisma.packagingWeightProfile.update({
     where: { id },
     data: {
-      farmId: norm(formData.get("farmId")) ?? undefined,
+      farmId: resolvedFarmId,
+      productVariantId,
       supplierCode: norm(formData.get("supplierCode")),
-      boxType: norm(formData.get("boxType")) ?? "QB",
+      boxType,
       stemsPerBox,
       weightPerBoxKg,
       notes: norm(formData.get("notes")),
@@ -456,6 +559,7 @@ export async function updateSupplierLink(id: string, formData: FormData): Promis
   });
   revalidatePath("/products");
   revalidatePath("/weight-profiles");
+  return { ok: true, message: "Artikel bijgewerkt." };
 }
 
 /**

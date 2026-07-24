@@ -22,7 +22,8 @@ interface Props {
  * `findOrCreatePackagingWeightProfile`) - this form only collects input.
  */
 export function CreateAssortmentModal({ line, farmId, farmName, isPending, onClose, onCreate }: Props) {
-  const defaultStemLength = line.stemLengthCm != null ? `${line.stemLengthCm} cm` : "";
+  // Canonical numeric assortment length (section A) - never "60 cm".
+  const defaultStemLength = line.stemLengthCm != null ? String(line.stemLengthCm) : "";
 
   return (
     <Modal title="Create assortment item" onClose={onClose}>
@@ -52,8 +53,17 @@ export function CreateAssortmentModal({ line, farmId, farmName, isPending, onClo
               <input className="input" name="variety" defaultValue={line.varietyRaw ?? ""} required />
             </div>
             <div>
-              <label className="label">Length *</label>
-              <input className="input" name="stemLength" defaultValue={defaultStemLength} placeholder="bv. 60 cm" required />
+              <label className="label">Length (cm) *</label>
+              <input
+                className="input"
+                name="stemLength"
+                type="number"
+                min={1}
+                step={1}
+                defaultValue={defaultStemLength}
+                placeholder="bv. 60"
+                required
+              />
             </div>
             <div>
               <label className="label">Box type *</label>

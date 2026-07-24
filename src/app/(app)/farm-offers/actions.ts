@@ -30,6 +30,7 @@ import { loadFarmAssortmentCandidates } from "@/lib/import/matching/assortmentRe
 import { matchFarmOfferLine } from "@/lib/import/matching/matchFarmOfferLine";
 import { haveMatchAffectingFieldsChanged, resolveImportedProductName } from "@/lib/import/matching/assortmentMatch";
 import { findOrCreatePackagingWeightProfile } from "@/lib/import/matching/assortmentCreate";
+import { normalizeAssortmentStemLength } from "@/lib/assortmentLength";
 import { applySupplierMappingsThenMatch } from "@/lib/supplierMapping/applyMappings";
 import { normalizeSupplierMappingSource } from "@/lib/supplierMapping/normalize";
 import { isValidSupplierMappingSource } from "@/lib/supplierMapping/mappingSource";
@@ -583,18 +584,27 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
 
   const productName = emptyToNull(formData.get("productName"));
   const variety = emptyToNull(formData.get("variety"));
-  const stemLength = emptyToNull(formData.get("stemLength"));
+  const stemLengthRaw = emptyToNull(formData.get("stemLength"));
   const boxType = emptyToNull(formData.get("boxType"));
   const stemsPerBoxRaw = emptyToNull(formData.get("stemsPerBox"));
   const stemsPerBox = stemsPerBoxRaw !== null ? parseInt(stemsPerBoxRaw, 10) : null;
   const weightPerBoxKg = emptyToNull(formData.get("weightPerBoxKg"));
 
-  if (!productName || !variety || !stemLength || !boxType || !stemsPerBox || stemsPerBox <= 0 || !weightPerBoxKg) {
+  if (!productName || !variety || !stemLengthRaw || !boxType || !stemsPerBox || stemsPerBox <= 0 || !weightPerBoxKg) {
     return {
       ok: false,
       message: "Product, variëteit, lengte, doostype, stelen per doos en doosgewicht zijn allemaal verplicht.",
     };
   }
+
+  // Canonical numeric assortment length (section A) - reject rather than
+  // guess a range/decimal/non-numeric value before it ever reaches the
+  // shared find-or-create helper.
+  const normalizedLength = normalizeAssortmentStemLength(stemLengthRaw);
+  if (!normalizedLength.ok) {
+    return { ok: false, message: normalizedLength.error };
+  }
+  const stemLength = normalizedLength.value;
 
   let created;
   try {

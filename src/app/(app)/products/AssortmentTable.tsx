@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { fmtMoney } from "@/lib/format";
+import { normalizeAssortmentStemLength } from "@/lib/assortmentLength";
 import {
   headerCheckboxState,
   toggleAllSelection,
@@ -59,6 +60,20 @@ const emptyEdit: BulkEditInput = {
 
 type Modal = null | "edit" | "duplicate" | "delete";
 
+/**
+ * Prefills the row edit form's numeric Length input. A `type="number"` input
+ * silently shows blank for a non-numeric `defaultValue`, so an already-clean
+ * value ("60") still prefills, while a legacy free-text value ("60 cm") -
+ * not yet touched by the canonical-length normalization this edit form now
+ * enforces - simply starts blank instead of showing something the browser
+ * would reject anyway; the user just types the number, same as any other row.
+ */
+function rowStemLengthDefault(stemLength: string | null): string {
+  if (!stemLength) return "";
+  const normalized = normalizeAssortmentStemLength(stemLength);
+  return normalized.ok ? normalized.value : "";
+}
+
 export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]; farms: FarmOption[] }) {
   const router = useRouter();
   const [selected, setSelected] = useState<string[]>([]);
@@ -108,6 +123,16 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
         setEdit(emptyEdit);
         router.refresh();
       }
+    });
+  }
+
+  /** Per-row "Bewerken" save (Part B) - reports a duplicate/validation error via the same toast, never an unhandled throw. */
+  function runRowEdit(id: string, formData: FormData) {
+    if (isPending) return;
+    startTransition(async () => {
+      const res = await updateSupplierLink(id, formData);
+      setToast(res);
+      if (res.ok) router.refresh();
     });
   }
 
@@ -175,7 +200,7 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
               <th>Leverancier</th>
               <th>Product</th>
               <th>Variety</th>
-              <th>Lengte</th>
+              <th>Lengte (cm)</th>
               <th>Box/verpakking</th>
               <th>Doosgewicht</th>
               <th>Aantekeningen</th>
@@ -218,7 +243,10 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                     <details className="inline-block mr-2">
                       <summary className="text-xs text-brand-600 cursor-pointer inline">Bewerken</summary>
                       <form
-                        action={updateSupplierLink.bind(null, p.id)}
+                        onSubmit={(e) => {
+                          e.preventDefault();
+                          runRowEdit(p.id, new FormData(e.currentTarget));
+                        }}
                         className="mt-2 flex flex-wrap gap-2 items-end bg-gray-50 p-2 rounded"
                       >
                         <div>
@@ -230,6 +258,22 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                               </option>
                             ))}
                           </select>
+                        </div>
+                        <div>
+                          <label className="label">Variety</label>
+                          <input name="variety" required defaultValue={p.variety ?? ""} className="input py-1 text-xs w-28" />
+                        </div>
+                        <div>
+                          <label className="label">Lengte (cm)</label>
+                          <input
+                            name="stemLength"
+                            type="number"
+                            min={1}
+                            step={1}
+                            required
+                            defaultValue={rowStemLengthDefault(p.stemLength)}
+                            className="input py-1 text-xs w-20"
+                          />
                         </div>
                         <div>
                           <label className="label">Code</label>
@@ -258,7 +302,9 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                           <label className="label">Aantekeningen</label>
                           <input name="notes" defaultValue={p.notes ?? ""} className="input py-1 text-xs w-40" />
                         </div>
-                        <button className="btn-primary py-1 px-2 text-xs">Opslaan</button>
+                        <button className="btn-primary py-1 px-2 text-xs" disabled={isPending}>
+                          {isPending ? "Bezig..." : "Opslaan"}
+                        </button>
                       </form>
                     </details>
                     {/* Secondary row actions collapsed behind a compact "..." menu (Task 3B). */}

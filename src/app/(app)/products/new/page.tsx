@@ -50,8 +50,8 @@ export default async function ProductNewPage() {
             <input className="input" name="variety" placeholder="bv. Freedom" />
           </div>
           <div>
-            <label className="label">Lengte</label>
-            <input className="input" name="stemLength" placeholder="bv. 60 cm" />
+            <label className="label">Lengte (cm)</label>
+            <input className="input" name="stemLength" type="number" min={1} step={1} placeholder="bv. 60" />
           </div>
           <div className="col-span-2">
             <button className="btn-primary" type="submit">
