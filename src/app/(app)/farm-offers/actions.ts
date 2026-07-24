@@ -21,6 +21,7 @@ import {
   computeLineValidationMessages,
   MANUAL_LINE_RAWTEXT_PLACEHOLDER,
   enrichParsedOfferLine,
+  applyCanonicalPackaging,
   type MatchedPackagingInfo,
   type ImportResult,
   type OfferUnitLike,
@@ -333,6 +334,16 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
   let productVariantId = existing.productVariantId;
   let matchStatus = existing.matchStatus;
 
+  // Task 1 (canonical packaging): defaults to what the reviewer typed; only
+  // overridden below when a rematch lands on a fresh CONFIRMED single profile
+  // (AUTO_MATCHED/DERIVED) - never for AMBIGUOUS/UNMATCHED, and never when
+  // nothing match-affecting changed at all (a price/notes-only edit keeps
+  // whatever packaging the line already has, exactly as before).
+  let effectiveBoxType = boxType;
+  let effectiveStemsPerBox = stemsPerBox;
+  let effectiveWeightPerBoxKg = weightPerBoxKg;
+  let effectiveTotalStems = totalStems;
+
   if (haveMatchAffectingFieldsChanged(before, after)) {
     // Section 14: a match-affecting correction invalidates any existing link
     // (including a USER_LINKED one) - re-run the same deterministic engine
@@ -351,6 +362,26 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
       packagingWeightProfileId = match.packagingWeightProfileId;
       productVariantId = match.productVariantId;
       matchStatus = match.status as LineMatchStatus;
+
+      // A rematch onto a CONFIRMED single profile makes IT the canonical
+      // packaging source, overriding whatever the form's boxType/stemsPerBox/
+      // weightPerBoxKg inputs said (those reflected the PREVIOUS product) -
+      // same shared computation every other confirmed-match path uses.
+      const matchedCandidate =
+        packagingWeightProfileId && (matchStatus === LineMatchStatus.AUTO_MATCHED || matchStatus === LineMatchStatus.DERIVED)
+          ? candidates.find((c) => c.packagingWeightProfileId === packagingWeightProfileId)
+          : undefined;
+      if (matchedCandidate) {
+        const canonical = applyCanonicalPackaging(
+          { boxType: matchedCandidate.boxType, stemsPerBox: matchedCandidate.stemsPerBox, weightPerBoxKg: matchedCandidate.boxWeight },
+          quantityNumber,
+          unit as OfferUnitLike | null,
+        );
+        effectiveBoxType = canonical.boxType;
+        effectiveStemsPerBox = canonical.stemsPerBox;
+        effectiveWeightPerBoxKg = canonical.weightPerBoxKg;
+        effectiveTotalStems = canonical.totalStems;
+      }
     } else {
       packagingWeightProfileId = null;
       productVariantId = null;
@@ -367,10 +398,10 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
     unit: unit as OfferUnitLike | null,
     stemLengthCm,
     quantity: quantityRaw,
-    totalStems,
+    totalStems: effectiveTotalStems,
     boxesAvailable,
-    stemsPerBox,
-    weightPerBoxKg,
+    stemsPerBox: effectiveStemsPerBox,
+    weightPerBoxKg: effectiveWeightPerBoxKg,
   });
 
   try {
@@ -382,16 +413,16 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
         colorRaw,
         gradeRaw,
         treatmentRaw,
-        boxType,
+        boxType: effectiveBoxType,
         boxesAvailable,
-        stemsPerBox,
+        stemsPerBox: effectiveStemsPerBox,
         stemLengthCm,
         quantity: quantityRaw,
         unit,
-        totalStems,
+        totalStems: effectiveTotalStems,
         fobPricePerStem,
         currency,
-        weightPerBoxKg,
+        weightPerBoxKg: effectiveWeightPerBoxKg,
         notes,
         packagingWeightProfileId,
         productVariantId,
@@ -442,6 +473,18 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
   });
   if (!validation.ok) return { ok: false, message: validation.message };
 
+  // Task 1 (canonical packaging): a manually chosen profile is just as much a
+  // CONFIRMED single-profile match as an AUTO_MATCHED one - its own
+  // boxType/stemsPerBox/weightPerBoxKg become the line's CURRENT values via
+  // the same shared computation `enrichParsedOfferLine` uses at import time,
+  // so the supplier never needs to have stated them and totalStems becomes
+  // calculable. `rawText`/`extractedSnapshot` are never touched here.
+  const canonical = applyCanonicalPackaging(
+    { boxType: profile!.boxType, stemsPerBox: profile!.stemsPerBox, weightPerBoxKg: profile!.weightPerBoxKg.toString() },
+    line.quantity !== null ? Number(line.quantity) : null,
+    line.unit as OfferUnitLike | null,
+  );
+
   const { validationWarnings, validationErrors } = computeLineValidationMessages(line.extractedSnapshot, {
     packagingWeightProfileId: profile!.id,
     productGroupRaw: line.productGroupRaw,
@@ -451,10 +494,10 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
     unit: line.unit as OfferUnitLike | null,
     stemLengthCm: line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
-    totalStems: line.totalStems,
+    totalStems: canonical.totalStems,
     boxesAvailable: line.boxesAvailable,
-    stemsPerBox: profile!.stemsPerBox,
-    weightPerBoxKg: profile!.weightPerBoxKg?.toString() ?? null,
+    stemsPerBox: canonical.stemsPerBox,
+    weightPerBoxKg: canonical.weightPerBoxKg,
   });
 
   try {
@@ -464,6 +507,10 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
         packagingWeightProfileId: profile!.id,
         productVariantId: profile!.productVariantId,
         matchStatus: LineMatchStatus.USER_LINKED,
+        boxType: canonical.boxType,
+        stemsPerBox: canonical.stemsPerBox,
+        weightPerBoxKg: canonical.weightPerBoxKg,
+        totalStems: canonical.totalStems,
         validationWarnings: validationWarnings as never,
         validationErrors: validationErrors as never,
       },
@@ -532,6 +579,17 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
     };
   }
 
+  // Task 1 (canonical packaging): use the RESOLVED profile's own canonical
+  // values (`created.boxType`/`stemsPerBox`/`weightPerBoxKg`), never the raw
+  // form input directly - `findOrCreatePackagingWeightProfile` may have
+  // reused an EXISTING profile whose own values differ from what was typed.
+  // Same shared computation as every other confirmed-match path.
+  const canonical = applyCanonicalPackaging(
+    { boxType: created.boxType, stemsPerBox: created.stemsPerBox, weightPerBoxKg: created.weightPerBoxKg },
+    line.quantity !== null ? Number(line.quantity) : null,
+    line.unit as OfferUnitLike | null,
+  );
+
   const { validationWarnings, validationErrors } = computeLineValidationMessages(line.extractedSnapshot, {
     packagingWeightProfileId: created.packagingWeightProfileId,
     productGroupRaw: line.productGroupRaw,
@@ -541,10 +599,10 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
     unit: line.unit as OfferUnitLike | null,
     stemLengthCm: line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
-    totalStems: line.totalStems,
+    totalStems: canonical.totalStems,
     boxesAvailable: line.boxesAvailable,
-    stemsPerBox,
-    weightPerBoxKg,
+    stemsPerBox: canonical.stemsPerBox,
+    weightPerBoxKg: canonical.weightPerBoxKg,
   });
 
   try {
@@ -554,6 +612,10 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
         packagingWeightProfileId: created.packagingWeightProfileId,
         productVariantId: created.productVariantId,
         matchStatus: LineMatchStatus.USER_LINKED,
+        boxType: canonical.boxType,
+        stemsPerBox: canonical.stemsPerBox,
+        weightPerBoxKg: canonical.weightPerBoxKg,
+        totalStems: canonical.totalStems,
         validationWarnings: validationWarnings as never,
         validationErrors: validationErrors as never,
       },

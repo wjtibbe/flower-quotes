@@ -36,6 +36,21 @@
   .table-base td {
     @apply px-3 py-2 border-t border-gray-100;
   }
+  /* Opt-in higher-density variant (Task 7: "compact but calm") - used by the
+     Assortiment overview table to fit materially more rows on one laptop
+     screen, without changing `.table-base` globally and affecting every
+     other table in the app (customers, quotes, farm-offers, ...). A
+     self-contained alternative to `.table-base` (not meant to be combined
+     with it) so the cascade order between the two never matters. */
+  .table-compact {
+    @apply min-w-full divide-y divide-gray-200 text-sm;
+  }
+  .table-compact th {
+    @apply px-3 py-1.5 text-left font-semibold text-gray-600 bg-gray-50;
+  }
+  .table-compact td {
+    @apply px-3 py-1 border-t border-gray-100;
+  }
   .badge {
     @apply inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium;
   }

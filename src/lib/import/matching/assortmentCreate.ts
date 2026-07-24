@@ -20,6 +20,18 @@ export interface CreateAssortmentItemResult {
   createdProduct: boolean;
   createdVariant: boolean;
   createdProfile: boolean;
+  /**
+   * The resolved profile's OWN canonical packaging fields - identical to the
+   * input when a new profile was just created, but reflects the EXISTING
+   * profile's actual values (which may differ from what was typed, e.g. its
+   * `weightPerBoxKg`) when an existing profile was reused instead. Callers
+   * should always treat this, never the raw form input, as the canonical
+   * source once linked (see `applyCanonicalPackaging` in
+   * `farmOfferEnrichment.ts`).
+   */
+  boxType: string;
+  stemsPerBox: number;
+  weightPerBoxKg: string;
 }
 
 /**
@@ -103,5 +115,8 @@ export async function findOrCreatePackagingWeightProfile(
     createdProduct,
     createdVariant,
     createdProfile,
+    boxType: profile.boxType,
+    stemsPerBox: profile.stemsPerBox,
+    weightPerBoxKg: profile.weightPerBoxKg.toString(),
   };
 }

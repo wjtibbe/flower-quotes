@@ -34,10 +34,14 @@ beforeEach(() => {
 });
 
 describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
+  function profileRow(overrides: Record<string, unknown> = {}) {
+    return { id: "profile-1", boxType: "QB", stemsPerBox: 100, weightPerBoxKg: { toString: () => "8.000" }, ...overrides };
+  }
+
   it("reuses an existing Product by name (case-insensitive) instead of creating a duplicate", async () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockVariantFindFirst.mockResolvedValue({ id: "variant-1" });
-    mockProfileFindFirst.mockResolvedValue({ id: "profile-1" });
+    mockProfileFindFirst.mockResolvedValue(profileRow());
 
     const result = await findOrCreatePackagingWeightProfile(INPUT);
 
@@ -49,7 +53,7 @@ describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
   it("reuses an existing ProductVariant for product+variety+length instead of creating a duplicate", async () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockVariantFindFirst.mockResolvedValue({ id: "variant-1" });
-    mockProfileFindFirst.mockResolvedValue({ id: "profile-1" });
+    mockProfileFindFirst.mockResolvedValue(profileRow());
 
     const result = await findOrCreatePackagingWeightProfile(INPUT);
 
@@ -62,7 +66,7 @@ describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockVariantFindFirst.mockResolvedValue(null);
     mockVariantCreate.mockResolvedValue({ id: "new-variant" });
-    mockProfileFindFirst.mockResolvedValue({ id: "profile-1" });
+    mockProfileFindFirst.mockResolvedValue(profileRow());
 
     const result = await findOrCreatePackagingWeightProfile(INPUT);
 
@@ -76,7 +80,7 @@ describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
   it("reuses an exact existing PackagingWeightProfile (farm+variant+boxType+stemsPerBox) instead of duplicating it", async () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockVariantFindFirst.mockResolvedValue({ id: "variant-1" });
-    mockProfileFindFirst.mockResolvedValue({ id: "existing-profile" });
+    mockProfileFindFirst.mockResolvedValue(profileRow({ id: "existing-profile" }));
 
     const result = await findOrCreatePackagingWeightProfile(INPUT);
 
@@ -85,11 +89,26 @@ describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
     expect(result.packagingWeightProfileId).toBe("existing-profile");
   });
 
+  it("the resolved canonical fields reflect the REUSED profile's own values, even if they differ from what was typed", async () => {
+    mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
+    mockVariantFindFirst.mockResolvedValue({ id: "variant-1" });
+    // Existing profile has a DIFFERENT weight than INPUT's typed "8.000".
+    mockProfileFindFirst.mockResolvedValue(
+      profileRow({ id: "existing-profile", weightPerBoxKg: { toString: () => "7.500" } }),
+    );
+
+    const result = await findOrCreatePackagingWeightProfile(INPUT);
+
+    expect(result.weightPerBoxKg).toBe("7.500");
+    expect(result.boxType).toBe("QB");
+    expect(result.stemsPerBox).toBe(100);
+  });
+
   it("creates a new PackagingWeightProfile when none matches exactly", async () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockVariantFindFirst.mockResolvedValue({ id: "variant-1" });
     mockProfileFindFirst.mockResolvedValue(null);
-    mockProfileCreate.mockResolvedValue({ id: "new-profile" });
+    mockProfileCreate.mockResolvedValue(profileRow({ id: "new-profile" }));
 
     const result = await findOrCreatePackagingWeightProfile(INPUT);
 
@@ -113,7 +132,7 @@ describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
     mockVariantFindFirst.mockResolvedValue(null);
     mockVariantCreate.mockResolvedValue({ id: "brand-new-variant" });
     mockProfileFindFirst.mockResolvedValue(null);
-    mockProfileCreate.mockResolvedValue({ id: "brand-new-profile" });
+    mockProfileCreate.mockResolvedValue(profileRow({ id: "brand-new-profile" }));
 
     const result = await findOrCreatePackagingWeightProfile(INPUT);
 
@@ -126,7 +145,7 @@ describe("findOrCreatePackagingWeightProfile - section 26.D", () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockVariantFindFirst.mockResolvedValue({ id: "variant-1" });
     mockProfileFindFirst.mockResolvedValue(null);
-    mockProfileCreate.mockResolvedValue({ id: "new-profile" });
+    mockProfileCreate.mockResolvedValue(profileRow({ id: "new-profile" }));
 
     await findOrCreatePackagingWeightProfile({ ...INPUT, farmId: "farm-999" });
 

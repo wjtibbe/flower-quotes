@@ -83,6 +83,13 @@ function currentRate<T extends { effectiveFrom: Date; effectiveTo: Date | null }
     .sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())[0];
 }
 
+// Shared column layout for the header row and every route summary row (Task
+// 5A/5C) - a CSS grid, not an HTML <table>, so the expanded detail panel
+// (Task 5B) can sit in normal full-width document flow BELOW a row instead
+// of being forced into a table cell - the root cause of the old far-right
+// panel forcing horizontal scroll.
+const ROW_GRID = "grid grid-cols-[1.4fr_1.4fr_1fr_1fr_0.8fr_1fr_1.25rem] gap-3 items-center";
+
 export default async function RoutesPage({ searchParams }: { searchParams: Params }) {
   const [routes, origins, destinations] = await Promise.all([
     prisma.route.findMany({
@@ -162,23 +169,22 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
     return `/routes?${p.toString()}`;
   };
   const Th = ({ k, children }: { k: string; children: React.ReactNode }) => (
-    <th>
-      <Link href={sortLink(k)} className="hover:underline">
-        {children}
-        {sortKey === k ? (dir === 1 ? " ↑" : " ↓") : ""}
-      </Link>
-    </th>
+    <Link href={sortLink(k)} className="hover:underline text-xs font-semibold text-gray-600">
+      {children}
+      {sortKey === k ? (dir === 1 ? " ↑" : " ↓") : ""}
+    </Link>
   );
 
   const msg = searchParams.msg ? MESSAGES[searchParams.msg] : null;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Routes & vracht</h1>
         <p className="text-sm text-gray-500 mt-1">
           Herbruikbare locaties, routes per transporttype en één of meer vrachttarieven per route. Het tarief dat nu
-          geldig is (ingangsdatum bereikt, niet verlopen, actief) wordt gebruikt voor nieuwe offertes.
+          geldig is (ingangsdatum bereikt, niet verlopen, actief) wordt gebruikt voor nieuwe offertes. Klik op een
+          route voor tariefgeschiedenis, instellingen en aanvullende kosten.
         </p>
       </div>
 
@@ -188,7 +194,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
         </div>
       )}
 
-      <form className="card p-4 flex flex-wrap gap-3 items-end">
+      <form className="card p-3 flex flex-wrap gap-3 items-end">
         <div>
           <label className="label">Vertrekstad</label>
           <select name="from" defaultValue={searchParams.from ?? ""} className="input py-1">
@@ -243,318 +249,331 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
         )}
       </form>
 
-      <div className="card overflow-x-auto">
-        <table className="table-base">
-          <thead>
-            <tr>
-              <Th k="from">Vertrek</Th>
-              <Th k="fromCountry">Vertrekland</Th>
-              <Th k="to">Bestemming</Th>
-              <Th k="toCountry">Bestemmingsland</Th>
-              <Th k="transport">Transport</Th>
-              <Th k="currency">Valuta</Th>
-              <Th k="rate">Tarief</Th>
-              <Th k="unit">Eenheid</Th>
-              <Th k="effectiveFrom">Ingangsdatum</Th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(({ route, rate }) => (
-              <tr key={route.id}>
-                <td className="py-1.5 font-medium">
+      {/* CSS-grid list, not a <table> (Task 5A/5C): every route is a <details>
+          block in normal document flow, so its expanded content (Task 5B)
+          renders full-width BELOW the row - never squeezed into a
+          far-right table cell that forces horizontal scroll. `name` groups
+          every <details> into one native, JS-free accordion (Task 5C: only
+          one route expanded at a time). */}
+      <div className="card overflow-hidden">
+        <div className={`${ROW_GRID} px-4 py-2 bg-gray-50 border-b border-gray-200`}>
+          <Th k="from">Vertrek</Th>
+          <Th k="to">Bestemming</Th>
+          <Th k="transport">Transport</Th>
+          <Th k="rate">Tarief</Th>
+          <Th k="unit">Eenheid</Th>
+          <Th k="effectiveFrom">Ingangsdatum</Th>
+          <span />
+        </div>
+
+        {rows.map(({ route, rate }) => {
+          const activeCostIds = currentCosts(route.ddpCostRates);
+          return (
+            <details key={route.id} name="route-expand" className="group border-b border-gray-100 last:border-b-0">
+              <summary
+                className={`${ROW_GRID} px-4 py-2 text-sm cursor-pointer list-none hover:bg-gray-50 [&::-webkit-details-marker]:hidden`}
+              >
+                <span className="font-medium text-gray-900">
                   {route.origin.city}
-                  {route.origin.code && <span className="ml-1 text-xs text-gray-400">{route.origin.code}</span>}
-                </td>
-                <td className="py-1.5">{route.origin.country}</td>
-                <td className="py-1.5 font-medium">
+                  <span className="block text-xs text-gray-400 font-normal">{route.origin.country}</span>
+                </span>
+                <span className="font-medium text-gray-900">
                   {route.destination.city}
-                  {route.destination.code && <span className="ml-1 text-xs text-gray-400">{route.destination.code}</span>}
-                </td>
-                <td className="py-1.5">{route.destination.country}</td>
-                <td className="py-1.5">{TRANSPORT_LABELS[route.transportType]}</td>
-                <td className="py-1.5">{rate?.currency ?? "-"}</td>
-                <td className="py-1.5">{rate ? fmtMoney(rate.ratePerKg, 4) : <span className="text-red-500">geen tarief</span>}</td>
-                <td className="py-1.5">{rate ? UNIT_LABELS[rate.rateUnit] : "-"}</td>
-                <td className="py-1.5">{rate ? fmtDate(rate.effectiveFrom) : "-"}</td>
-                <td className="py-1.5 whitespace-nowrap">
-                  <details>
-                    <summary className="text-xs text-brand-600 cursor-pointer">Tarieven & instellingen</summary>
-                    <div className="mt-2 bg-gray-50 p-3 rounded space-y-3 min-w-96">
-                      <table className="table-base">
-                        <thead>
-                          <tr>
-                            <th>Tarief</th>
-                            <th>Eenheid</th>
-                            <th>Geldig van</th>
-                            <th>Geldig tot</th>
-                            <th></th>
-                            <th></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {route.freightRates.map((fr) => (
-                            <tr key={fr.id} className={rate?.id === fr.id ? "font-semibold" : ""}>
-                              <td>{fr.currency} {fmtMoney(fr.ratePerKg, 4)}</td>
-                              <td>{UNIT_LABELS[fr.rateUnit]}</td>
-                              <td>{fmtDate(fr.effectiveFrom)}</td>
-                              <td>{fr.effectiveTo ? fmtDate(fr.effectiveTo) : "-"}</td>
-                              <td>{rate?.id === fr.id && <span className="badge-high">in gebruik</span>}</td>
-                              <td>
-                                <form action={deleteFreightRate.bind(null, fr.id)}>
-                                  <ConfirmButton
-                                    message="Weet je zeker dat je dit tarief wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
-                                    className="text-xs text-red-600 hover:underline"
-                                  >
-                                    Verwijderen
-                                  </ConfirmButton>
-                                </form>
-                              </td>
-                            </tr>
-                          ))}
-                          {route.freightRates.length === 0 && (
-                            <tr><td colSpan={6} className="text-gray-400">Nog geen tarieven.</td></tr>
-                          )}
-                        </tbody>
-                      </table>
-
-                      <form action={addFreightRate.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
-                        <div>
-                          <label className="label">Nieuw tarief</label>
-                          <input name="ratePerKg" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
-                        </div>
-                        <div>
-                          <label className="label">Valuta</label>
-                          <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue={rate?.currency ?? "USD"}>
-                            <option value="USD">USD</option>
-                            <option value="EUR">EUR</option>
-                          </select>
-                        </div>
-                        <div>
-                          <label className="label">Eenheid</label>
-                          <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_KG">
-                            {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="label">Geldig vanaf</label>
-                          <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
-                        </div>
-                        <div>
-                          <label className="label">Geldig tot</label>
-                          <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
-                        </div>
-                        <button className="btn-primary py-1 px-2 text-xs">Tarief toevoegen</button>
-                      </form>
-
-                      <div className="flex items-center gap-3 pt-2 border-t border-gray-200 text-sm">
-                        <span className="badge bg-gray-100 text-gray-700">FOB altijd beschikbaar</span>
-                        <form action={toggleRouteSupportsCfr.bind(null, route.id, route.supportsCfr)}>
-                          <button className={route.supportsCfr ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
-                            C&F: {route.supportsCfr ? "aan" : "uit"}
-                          </button>
-                        </form>
-                        <form action={toggleRouteSupportsDdp.bind(null, route.id, route.supportsDdp)}>
-                          <button className={route.supportsDdp ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
-                            DDP: {route.supportsDdp ? "aan" : "uit"}
-                          </button>
-                        </form>
-                        <form action={deleteRoute.bind(null, route.id)}>
-                          <ConfirmButton
-                            message={`Weet je zeker dat je de route ${route.origin.city} → ${route.destination.city} wilt verwijderen? Alle tarieven en aanvullende kosten van deze route worden ook verwijderd. Dit kan niet ongedaan worden gemaakt.`}
-                            className="text-xs text-red-600 hover:underline"
-                          >
-                            Route verwijderen
-                          </ConfirmButton>
-                        </form>
-                      </div>
-
-                      {(() => {
-                        const activeCostIds = currentCosts(route.ddpCostRates);
-                        return (
-                          <div className="pt-2 border-t border-gray-200 space-y-2">
-                            <div className="font-medium text-gray-700">Aanvullende kosten (DDP)</div>
-                            <table className="table-base">
-                              <thead>
-                                <tr>
-                                  <th>Naam</th>
-                                  <th>Categorie</th>
-                                  <th>Bedrag</th>
-                                  <th>Eenheid</th>
-                                  <th>Geldig van</th>
-                                  <th>Geldig tot</th>
-                                  <th></th>
-                                  <th></th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {route.ddpCostRates.map((c) => (
-                                  <tr key={c.id} className={activeCostIds.has(c.id) ? "font-semibold" : ""}>
-                                    <td>{c.name ?? "-"}</td>
-                                    <td>{c.category ? CATEGORY_LABELS[c.category] : "-"}</td>
-                                    <td>{c.currency} {fmtMoney(c.amount, 4)}</td>
-                                    <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
-                                    <td>{fmtDate(c.effectiveFrom)}</td>
-                                    <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
-                                    <td>{activeCostIds.has(c.id) && <span className="badge-high">in gebruik</span>}</td>
-                                    <td>
-                                      <form action={deleteRouteCost.bind(null, c.id)}>
-                                        <ConfirmButton
-                                          message="Weet je zeker dat je deze aanvullende kost wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
-                                          className="text-xs text-red-600 hover:underline"
-                                        >
-                                          Verwijderen
-                                        </ConfirmButton>
-                                      </form>
-                                    </td>
-                                  </tr>
-                                ))}
-                                {route.ddpCostRates.length === 0 && (
-                                  <tr><td colSpan={8} className="text-gray-400">Nog geen aanvullende kosten.</td></tr>
-                                )}
-                              </tbody>
-                            </table>
-
-                            <form action={addRouteCost.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
-                              <div>
-                                <label className="label">Naam</label>
-                                <input name="name" required className="input py-1 px-2 text-xs w-32" />
-                              </div>
-                              <div>
-                                <label className="label">Categorie</label>
-                                <select name="category" className="input py-1 px-2 text-xs" defaultValue="CLEARING">
-                                  {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <label className="label">Bedrag</label>
-                                <input name="amount" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
-                              </div>
-                              <div>
-                                <label className="label">Valuta</label>
-                                <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue="USD">
-                                  <option value="USD">USD</option>
-                                  <option value="EUR">EUR</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="label">Eenheid</label>
-                                <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_STEM">
-                                  {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                                </select>
-                              </div>
-                              <div>
-                                <label className="label">Geldig vanaf</label>
-                                <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
-                              </div>
-                              <div>
-                                <label className="label">Geldig tot</label>
-                                <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
-                              </div>
-                              <button className="btn-primary py-1 px-2 text-xs">Kosten toevoegen</button>
-                            </form>
-                          </div>
-                        );
-                      })()}
-                    </div>
-                  </details>
-                </td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={11} className="text-center text-gray-400 py-8">
-                  Geen routes gevonden{hasFilters ? " met deze filters" : ""}.{" "}
-                  {hasFilters ? (
-                    <Link href="/routes" className="text-brand-600 hover:underline">Filters wissen</Link>
+                  <span className="block text-xs text-gray-400 font-normal">{route.destination.country}</span>
+                </span>
+                <span>{TRANSPORT_LABELS[route.transportType]}</span>
+                <span>
+                  {rate ? (
+                    <>
+                      {rate.currency} {fmtMoney(rate.ratePerKg, 4)}
+                    </>
                   ) : (
-                    "Maak hieronder eerst locaties en een route aan."
+                    <span className="text-red-500">geen tarief</span>
                   )}
-                </td>
-              </tr>
+                </span>
+                <span className="text-gray-500">{rate ? UNIT_LABELS[rate.rateUnit] : "-"}</span>
+                <span className="text-gray-500">{rate ? fmtDate(rate.effectiveFrom) : "-"}</span>
+                <span className="text-gray-400 transition-transform group-open:rotate-90 justify-self-end">›</span>
+              </summary>
+
+              <div className="px-4 pb-4 pt-1 bg-gray-50 space-y-4">
+                <div>
+                  <div className="font-medium text-gray-700 text-sm mb-1.5">Tariefgeschiedenis</div>
+                  <div className="card overflow-x-auto">
+                    <table className="table-compact">
+                      <thead>
+                        <tr>
+                          <th>Tarief</th>
+                          <th>Eenheid</th>
+                          <th>Geldig van</th>
+                          <th>Geldig tot</th>
+                          <th></th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {route.freightRates.map((fr) => (
+                          <tr key={fr.id} className={rate?.id === fr.id ? "font-semibold" : ""}>
+                            <td>{fr.currency} {fmtMoney(fr.ratePerKg, 4)}</td>
+                            <td>{UNIT_LABELS[fr.rateUnit]}</td>
+                            <td>{fmtDate(fr.effectiveFrom)}</td>
+                            <td>{fr.effectiveTo ? fmtDate(fr.effectiveTo) : "-"}</td>
+                            <td>{rate?.id === fr.id && <span className="badge-high">in gebruik</span>}</td>
+                            <td>
+                              <form action={deleteFreightRate.bind(null, fr.id)}>
+                                <ConfirmButton
+                                  message="Weet je zeker dat je dit tarief wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
+                                  className="text-xs text-red-600 hover:underline"
+                                >
+                                  Verwijderen
+                                </ConfirmButton>
+                              </form>
+                            </td>
+                          </tr>
+                        ))}
+                        {route.freightRates.length === 0 && (
+                          <tr><td colSpan={6} className="text-gray-400">Nog geen tarieven.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                <form action={addFreightRate.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
+                  <div>
+                    <label className="label">Nieuw tarief</label>
+                    <input name="ratePerKg" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
+                  </div>
+                  <div>
+                    <label className="label">Valuta</label>
+                    <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue={rate?.currency ?? "USD"}>
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Eenheid</label>
+                    <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_KG">
+                      {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">Geldig vanaf</label>
+                    <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
+                  </div>
+                  <div>
+                    <label className="label">Geldig tot</label>
+                    <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
+                  </div>
+                  <button className="btn-primary py-1 px-2 text-xs">Tarief toevoegen</button>
+                </form>
+
+                <div className="flex items-center gap-3 pt-3 border-t border-gray-200 text-sm">
+                  <span className="badge bg-gray-100 text-gray-700">FOB altijd beschikbaar</span>
+                  <form action={toggleRouteSupportsCfr.bind(null, route.id, route.supportsCfr)}>
+                    <button className={route.supportsCfr ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
+                      C&F: {route.supportsCfr ? "aan" : "uit"}
+                    </button>
+                  </form>
+                  <form action={toggleRouteSupportsDdp.bind(null, route.id, route.supportsDdp)}>
+                    <button className={route.supportsDdp ? "badge-high" : "badge bg-gray-100 text-gray-500"}>
+                      DDP: {route.supportsDdp ? "aan" : "uit"}
+                    </button>
+                  </form>
+                  <form action={deleteRoute.bind(null, route.id)} className="ml-auto">
+                    <ConfirmButton
+                      message={`Weet je zeker dat je de route ${route.origin.city} → ${route.destination.city} wilt verwijderen? Alle tarieven en aanvullende kosten van deze route worden ook verwijderd. Dit kan niet ongedaan worden gemaakt.`}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Route verwijderen
+                    </ConfirmButton>
+                  </form>
+                </div>
+
+                <div className="pt-3 border-t border-gray-200 space-y-2">
+                  <div className="font-medium text-gray-700 text-sm">Aanvullende kosten (DDP)</div>
+                  <div className="card overflow-x-auto">
+                    <table className="table-compact">
+                      <thead>
+                        <tr>
+                          <th>Naam</th>
+                          <th>Categorie</th>
+                          <th>Bedrag</th>
+                          <th>Eenheid</th>
+                          <th>Geldig van</th>
+                          <th>Geldig tot</th>
+                          <th></th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {route.ddpCostRates.map((c) => (
+                          <tr key={c.id} className={activeCostIds.has(c.id) ? "font-semibold" : ""}>
+                            <td>{c.name ?? "-"}</td>
+                            <td>{c.category ? CATEGORY_LABELS[c.category] : "-"}</td>
+                            <td>{c.currency} {fmtMoney(c.amount, 4)}</td>
+                            <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
+                            <td>{fmtDate(c.effectiveFrom)}</td>
+                            <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
+                            <td>{activeCostIds.has(c.id) && <span className="badge-high">in gebruik</span>}</td>
+                            <td>
+                              <form action={deleteRouteCost.bind(null, c.id)}>
+                                <ConfirmButton
+                                  message="Weet je zeker dat je deze aanvullende kost wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
+                                  className="text-xs text-red-600 hover:underline"
+                                >
+                                  Verwijderen
+                                </ConfirmButton>
+                              </form>
+                            </td>
+                          </tr>
+                        ))}
+                        {route.ddpCostRates.length === 0 && (
+                          <tr><td colSpan={8} className="text-gray-400">Nog geen aanvullende kosten.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <form action={addRouteCost.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
+                    <div>
+                      <label className="label">Naam</label>
+                      <input name="name" required className="input py-1 px-2 text-xs w-32" />
+                    </div>
+                    <div>
+                      <label className="label">Categorie</label>
+                      <select name="category" className="input py-1 px-2 text-xs" defaultValue="CLEARING">
+                        {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Bedrag</label>
+                      <input name="amount" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
+                    </div>
+                    <div>
+                      <label className="label">Valuta</label>
+                      <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue="USD">
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Eenheid</label>
+                      <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_STEM">
+                        {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Geldig vanaf</label>
+                      <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
+                    </div>
+                    <div>
+                      <label className="label">Geldig tot</label>
+                      <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
+                    </div>
+                    <button className="btn-primary py-1 px-2 text-xs">Kosten toevoegen</button>
+                  </form>
+                </div>
+              </div>
+            </details>
+          );
+        })}
+
+        {rows.length === 0 && (
+          <div className="text-center text-gray-400 py-8 text-sm">
+            Geen routes gevonden{hasFilters ? " met deze filters" : ""}.{" "}
+            {hasFilters ? (
+              <Link href="/routes" className="text-brand-600 hover:underline">Filters wissen</Link>
+            ) : (
+              "Maak hieronder eerst locaties en een route aan."
             )}
-          </tbody>
-        </table>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="card p-6">
-          <h2 className="font-semibold text-gray-800 mb-4">Nieuwe vertreklocatie</h2>
-          <form action={createOrigin} className="space-y-3">
-            <div>
-              <label className="label">Stad *</label>
-              <input className="input" name="city" required />
-            </div>
-            <div>
-              <label className="label">Land *</label>
-              <input className="input" name="country" required />
-            </div>
-            <div>
-              <label className="label">Luchthaven of locatie</label>
-              <input className="input" name="locationName" />
-            </div>
-            <div>
-              <label className="label">IATA-/locatiecode</label>
-              <input className="input" name="code" placeholder="bv. UIO" />
-            </div>
-            <button className="btn-primary" type="submit">Vertreklocatie toevoegen</button>
-          </form>
-        </div>
+      <details className="card p-4">
+        <summary className="font-semibold text-gray-800 cursor-pointer text-sm">
+          Locatie of route toevoegen
+        </summary>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-4">
+          <div>
+            <h2 className="font-semibold text-gray-800 mb-3 text-sm">Nieuwe vertreklocatie</h2>
+            <form action={createOrigin} className="space-y-3">
+              <div>
+                <label className="label">Stad *</label>
+                <input className="input" name="city" required />
+              </div>
+              <div>
+                <label className="label">Land *</label>
+                <input className="input" name="country" required />
+              </div>
+              <div>
+                <label className="label">Luchthaven of locatie</label>
+                <input className="input" name="locationName" />
+              </div>
+              <div>
+                <label className="label">IATA-/locatiecode</label>
+                <input className="input" name="code" placeholder="bv. UIO" />
+              </div>
+              <button className="btn-primary" type="submit">Vertreklocatie toevoegen</button>
+            </form>
+          </div>
 
-        <div className="card p-6">
-          <h2 className="font-semibold text-gray-800 mb-4">Nieuwe bestemming</h2>
-          <form action={createDestination} className="space-y-3">
-            <div>
-              <label className="label">Stad *</label>
-              <input className="input" name="city" required />
-            </div>
-            <div>
-              <label className="label">Land *</label>
-              <input className="input" name="country" required />
-            </div>
-            <div>
-              <label className="label">Luchthaven of locatie</label>
-              <input className="input" name="locationName" />
-            </div>
-            <div>
-              <label className="label">IATA-/locatiecode</label>
-              <input className="input" name="code" placeholder="bv. DXB" />
-            </div>
-            <button className="btn-primary" type="submit">Bestemming toevoegen</button>
-          </form>
-        </div>
+          <div>
+            <h2 className="font-semibold text-gray-800 mb-3 text-sm">Nieuwe bestemming</h2>
+            <form action={createDestination} className="space-y-3">
+              <div>
+                <label className="label">Stad *</label>
+                <input className="input" name="city" required />
+              </div>
+              <div>
+                <label className="label">Land *</label>
+                <input className="input" name="country" required />
+              </div>
+              <div>
+                <label className="label">Luchthaven of locatie</label>
+                <input className="input" name="locationName" />
+              </div>
+              <div>
+                <label className="label">IATA-/locatiecode</label>
+                <input className="input" name="code" placeholder="bv. DXB" />
+              </div>
+              <button className="btn-primary" type="submit">Bestemming toevoegen</button>
+            </form>
+          </div>
 
-        <div className="card p-6">
-          <h2 className="font-semibold text-gray-800 mb-4">Nieuwe route</h2>
-          <form action={createRoute} className="space-y-3">
-            <div>
-              <label className="label">Vertrekpunt *</label>
-              <select className="input" name="originId" required defaultValue="">
-                <option value="" disabled>Kies...</option>
-                {origins.map((o) => (
-                  <option key={o.id} value={o.id}>{o.city} ({o.country})</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label">Bestemming *</label>
-              <select className="input" name="destinationId" required defaultValue="">
-                <option value="" disabled>Kies...</option>
-                {destinations.map((d) => (
-                  <option key={d.id} value={d.id}>{d.city} ({d.country})</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="label">Transporttype</label>
-              <select className="input" name="transportType" defaultValue="AIR">
-                {Object.entries(TRANSPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-              </select>
-            </div>
-            <button className="btn-primary" type="submit">Route toevoegen</button>
-          </form>
+          <div>
+            <h2 className="font-semibold text-gray-800 mb-3 text-sm">Nieuwe route</h2>
+            <form action={createRoute} className="space-y-3">
+              <div>
+                <label className="label">Vertrekpunt *</label>
+                <select className="input" name="originId" required defaultValue="">
+                  <option value="" disabled>Kies...</option>
+                  {origins.map((o) => (
+                    <option key={o.id} value={o.id}>{o.city} ({o.country})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Bestemming *</label>
+                <select className="input" name="destinationId" required defaultValue="">
+                  <option value="" disabled>Kies...</option>
+                  {destinations.map((d) => (
+                    <option key={d.id} value={d.id}>{d.city} ({d.country})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label">Transporttype</label>
+                <select className="input" name="transportType" defaultValue="AIR">
+                  {Object.entries(TRANSPORT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+              <button className="btn-primary" type="submit">Route toevoegen</button>
+            </form>
+          </div>
         </div>
-      </div>
+      </details>
     </div>
   );
 }

@@ -1,6 +1,7 @@
+import Link from "next/link";
 import { prisma } from "@/lib/db";
 import ConfirmButton from "@/components/ConfirmButton";
-import { saveFarm, bulkAddFarms, deleteFarm, addFarmAlias, removeFarmAlias } from "./actions";
+import { saveFarm, deleteFarm, addFarmAlias, removeFarmAlias } from "./actions";
 
 export const dynamic = "force-dynamic";
 
@@ -17,10 +18,20 @@ export default async function FarmsPage({
   const editing = searchParams.edit ? farms.find((f) => f.id === searchParams.edit) : null;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Leveranciers</h1>
-        <p className="text-sm text-gray-500 mt-1">Leveranciers, hun vertrekpunt en bekende naamvarianten (aliassen).</p>
+    <div className="space-y-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Leveranciers</h1>
+          <p className="text-sm text-gray-500 mt-1">Leveranciers, hun vertrekpunt en bekende naamvarianten (aliassen).</p>
+        </div>
+        <div className="flex gap-2">
+          <Link href="/farms/new" className="btn-secondary py-1.5 px-3 text-sm">
+            Nieuwe leverancier
+          </Link>
+          <Link href="/farms/bulk" className="btn-secondary py-1.5 px-3 text-sm">
+            Bulk import
+          </Link>
+        </div>
       </div>
 
       {searchParams.msg === "deleted" && (
@@ -84,81 +95,52 @@ export default async function FarmsPage({
         ))}
       </div>
 
-      <div className="card p-6 max-w-2xl">
-        <h2 className="font-semibold text-gray-800 mb-1">Meerdere leveranciers tegelijk toevoegen (plakken)</h2>
-        <p className="text-sm text-gray-500 mb-4">
-          Plak een lijst, één leverancier per regel: <code className="text-xs bg-gray-100 px-1 rounded">Land</code>{" "}
-          gevolgd door <code className="text-xs bg-gray-100 px-1 rounded">Naam</code> (gescheiden door een Tab, zoals
-          uit Excel). Staat er geen land bij een regel, dan wordt het standaardland hieronder gebruikt. Namen die al
-          bestaan worden overgeslagen (opnieuw plakken maakt geen duplicaten).
-        </p>
-        <form action={bulkAddFarms} className="space-y-4">
-          <div className="max-w-xs">
-            <label className="label">Standaardland (als een regel geen land heeft)</label>
-            <input className="input" name="defaultCountry" placeholder="bv. Ecuador" />
-          </div>
-          <div>
-            <label className="label">Regels (Land ⇥ Naam, één per regel)</label>
-            <textarea
-              className="input font-mono text-xs"
-              name="rows"
-              rows={8}
-              required
-              placeholder={"Ecuador\tRosaprima\nEcuador\tAgrocoex\nColombia\tLa Gaitana Farms"}
-            />
-          </div>
-          <button className="btn-primary" type="submit">
-            Leveranciers toevoegen
-          </button>
-        </form>
-      </div>
-
-      <div className="card p-6 max-w-2xl">
-        <h2 className="font-semibold text-gray-800 mb-4">{editing ? "Leverancier bewerken" : "Nieuwe leverancier"}</h2>
-        <form action={saveFarm} key={editing?.id ?? "new"} className="grid grid-cols-2 gap-4">
-          {editing && <input type="hidden" name="id" value={editing.id} />}
-          <div>
-            <label className="label">Naam *</label>
-            <input className="input" name="name" required defaultValue={editing?.name} />
-          </div>
-          <div>
-            <label className="label">Land *</label>
-            <input className="input" name="country" required defaultValue={editing?.country} />
-          </div>
-          <div>
-            <label className="label">Vertrekpunt</label>
-            <select className="input" name="originId" defaultValue={editing?.originId ?? ""}>
-              <option value="">-</option>
-              {origins.map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.city}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="label">Standaardvaluta</label>
-            <select className="input" name="defaultCurrency" defaultValue={editing?.defaultCurrency ?? "USD"}>
-              <option value="USD">USD</option>
-              <option value="EUR">EUR</option>
-            </select>
-          </div>
-          <div className="col-span-2">
-            <label className="label">Opmerkingen</label>
-            <textarea className="input" name="notes" rows={2} defaultValue={editing?.notes ?? ""} />
-          </div>
-          <div className="col-span-2 flex gap-2">
-            <button className="btn-primary" type="submit">
-              {editing ? "Opslaan" : "Leverancier toevoegen"}
-            </button>
-            {editing && (
+      {editing && (
+        <div className="card p-6 max-w-2xl">
+          <h2 className="font-semibold text-gray-800 mb-4">Leverancier bewerken</h2>
+          <form action={saveFarm} key={editing.id} className="grid grid-cols-2 gap-4">
+            <input type="hidden" name="id" value={editing.id} />
+            <div>
+              <label className="label">Naam *</label>
+              <input className="input" name="name" required defaultValue={editing.name} />
+            </div>
+            <div>
+              <label className="label">Land *</label>
+              <input className="input" name="country" required defaultValue={editing.country} />
+            </div>
+            <div>
+              <label className="label">Vertrekpunt</label>
+              <select className="input" name="originId" defaultValue={editing.originId ?? ""}>
+                <option value="">-</option>
+                {origins.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.city}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Standaardvaluta</label>
+              <select className="input" name="defaultCurrency" defaultValue={editing.defaultCurrency ?? "USD"}>
+                <option value="USD">USD</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="label">Opmerkingen</label>
+              <textarea className="input" name="notes" rows={2} defaultValue={editing.notes ?? ""} />
+            </div>
+            <div className="col-span-2 flex gap-2">
+              <button className="btn-primary" type="submit">
+                Opslaan
+              </button>
               <a href="/farms" className="btn-secondary">
                 Annuleren
               </a>
-            )}
-          </div>
-        </form>
-      </div>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 }

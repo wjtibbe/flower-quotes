@@ -1,5 +1,5 @@
 import { calculateTotalStems } from "./offerLineMapping";
-import type { ParsedOfferLine } from "./types";
+import type { OfferUnitLike, ParsedOfferLine } from "./types";
 
 /**
  * Deterministic, database-driven enrichment of a freshly matched
@@ -56,6 +56,40 @@ export interface MatchedPackagingInfo {
   stemsPerBox: number;
   /** Decimal string, e.g. "7.000". */
   weightPerBoxKg: string;
+}
+
+export interface CanonicalPackagingFields {
+  boxType: string;
+  stemsPerBox: number;
+  weightPerBoxKg: string;
+  totalStems: number | null;
+}
+
+/**
+ * Computes the canonical packaging fields (boxType/stemsPerBox/weightPerBoxKg)
+ * a CONFIRMED single `PackagingWeightProfile` match contributes to a line's
+ * CURRENT/effective state, plus the resulting `totalStems` for the line's
+ * current quantity/unit. This is the ONE shared computation used by every
+ * path that confirms a profile match on a line - import-time enrichment
+ * (`enrichParsedOfferLine`, below) and every post-import action that links a
+ * profile (`selectPackagingProfile`, `createAssortmentItemFromOfferLine`, and
+ * a rematch inside `updateOfferLine` that lands on AUTO_MATCHED/DERIVED) - so
+ * a line's canonical packaging is always derived the same way regardless of
+ * HOW the profile became confirmed. The supplier's own source text never
+ * needs to state stemsPerBox/box weight explicitly: once a single profile is
+ * confirmed, IT is the trusted source, never the (usually absent) source value.
+ */
+export function applyCanonicalPackaging(
+  matchedProfile: MatchedPackagingInfo,
+  quantity: number | null,
+  unit: OfferUnitLike | null,
+): CanonicalPackagingFields {
+  return {
+    boxType: matchedProfile.boxType,
+    stemsPerBox: matchedProfile.stemsPerBox,
+    weightPerBoxKg: matchedProfile.weightPerBoxKg,
+    totalStems: calculateTotalStems({ quantity, unit, stemsPerBox: matchedProfile.stemsPerBox }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -189,13 +223,19 @@ export function enrichParsedOfferLine(
     next = { ...next, quantity: String(next.boxesAvailable), unit: "BOXES" };
   }
 
-  // Canonical packaging from the matched PackagingWeightProfile.
+  // Canonical packaging from the matched PackagingWeightProfile - the SAME
+  // shared computation every other confirmed-match path uses.
   if (matchedProfile) {
+    const canonical = applyCanonicalPackaging(
+      matchedProfile,
+      next.quantity !== undefined ? Number(next.quantity) : null,
+      next.unit ?? null,
+    );
     next = {
       ...next,
-      boxType: matchedProfile.boxType,
-      stemsPerBox: matchedProfile.stemsPerBox,
-      weightPerBoxKg: matchedProfile.weightPerBoxKg,
+      boxType: canonical.boxType,
+      stemsPerBox: canonical.stemsPerBox,
+      weightPerBoxKg: canonical.weightPerBoxKg,
     };
   }
 

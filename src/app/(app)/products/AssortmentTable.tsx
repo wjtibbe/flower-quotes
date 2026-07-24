@@ -159,7 +159,7 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
       )}
 
       <div className="card overflow-x-auto">
-        <table className="table-base">
+        <table className="table-compact">
           <thead>
             <tr>
               <th className="w-8">
@@ -215,7 +215,7 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                     {p.notes ?? "-"}
                   </td>
                   <td className="whitespace-nowrap">
-                    <details className="inline-block mr-3">
+                    <details className="inline-block mr-2">
                       <summary className="text-xs text-brand-600 cursor-pointer inline">Bewerken</summary>
                       <form
                         action={updateSupplierLink.bind(null, p.id)}
@@ -261,39 +261,42 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
                         <button className="btn-primary py-1 px-2 text-xs">Opslaan</button>
                       </form>
                     </details>
-                    <details className="inline-block mr-3">
-                      <summary className="text-xs text-brand-600 cursor-pointer inline">Dupliceren</summary>
-                      <form
-                        action={duplicateSupplierLink.bind(null, p.id)}
-                        className="mt-2 flex gap-2 items-end bg-gray-50 p-2 rounded"
-                      >
-                        <div>
-                          <label className="label">Naar leverancier</label>
-                          <select name="farmId" className="input py-1 text-xs" defaultValue="">
-                            <option value="" disabled>
-                              Kies leverancier...
-                            </option>
-                            {farms.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {f.name}
+                    {/* Secondary row actions collapsed behind a compact "..." menu (Task 3B). */}
+                    <details className="inline-block group">
+                      <summary className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer inline list-none w-5 text-center">
+                        <span aria-hidden>⋯</span>
+                        <span className="sr-only">Meer acties voor {p.farmName} {p.productName}</span>
+                      </summary>
+                      <div className="mt-2 bg-gray-50 p-2 rounded space-y-2 max-w-xs">
+                        <form action={duplicateSupplierLink.bind(null, p.id)} className="flex gap-2 items-end">
+                          <div>
+                            <label className="label">Naar leverancier</label>
+                            <select name="farmId" className="input py-1 text-xs" defaultValue="">
+                              <option value="" disabled>
+                                Kies leverancier...
                               </option>
-                            ))}
-                          </select>
-                        </div>
-                        <button className="btn-secondary py-1 px-2 text-xs">Kopie maken</button>
-                      </form>
+                              {farms.map((f) => (
+                                <option key={f.id} value={f.id}>
+                                  {f.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <button className="btn-secondary py-1 px-2 text-xs whitespace-nowrap">Dupliceren</button>
+                        </form>
+                        <form action={deleteSupplierLink.bind(null, p.id)}>
+                          <button
+                            className="text-xs text-red-600 hover:underline"
+                            onClick={(e) => {
+                              if (!window.confirm(`Weet je zeker dat je "${p.productName} ${p.variety ?? ""}" van ${p.farmName} wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`))
+                                e.preventDefault();
+                            }}
+                          >
+                            Verwijderen
+                          </button>
+                        </form>
+                      </div>
                     </details>
-                    <form action={deleteSupplierLink.bind(null, p.id)} className="inline">
-                      <button
-                        className="text-xs text-red-600 hover:underline"
-                        onClick={(e) => {
-                          if (!window.confirm(`Weet je zeker dat je "${p.productName} ${p.variety ?? ""}" van ${p.farmName} wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`))
-                            e.preventDefault();
-                        }}
-                      >
-                        Verwijderen
-                      </button>
-                    </form>
                   </td>
                 </tr>
               );

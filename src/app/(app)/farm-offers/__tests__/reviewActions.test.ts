@@ -215,7 +215,14 @@ describe("updateOfferLine - correction + rematch", () => {
 describe("selectPackagingProfile - manual selection", () => {
   it("a valid same-farm profile is linked as USER_LINKED", async () => {
     mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
-    mockPackagingWeightProfileFindUnique.mockResolvedValue({ id: "profile-hb", farmId: FARM_ID, productVariantId: "variant-hb" });
+    mockPackagingWeightProfileFindUnique.mockResolvedValue({
+      id: "profile-hb",
+      farmId: FARM_ID,
+      productVariantId: "variant-hb",
+      boxType: "HB",
+      stemsPerBox: 12,
+      weightPerBoxKg: { toString: () => "4.500" },
+    });
 
     const result = await selectPackagingProfile("line-1", "profile-hb");
 
@@ -224,6 +231,10 @@ describe("selectPackagingProfile - manual selection", () => {
     expect(data.packagingWeightProfileId).toBe("profile-hb");
     expect(data.productVariantId).toBe("variant-hb");
     expect(data.matchStatus).toBe("USER_LINKED");
+    // Task 1: the profile's own canonical packaging is now persisted onto the line.
+    expect(data.boxType).toBe("HB");
+    expect(data.stemsPerBox).toBe(12);
+    expect(data.weightPerBoxKg).toBe("4.500");
   });
 
   it("rejects a profile belonging to a different farm", async () => {
@@ -271,7 +282,12 @@ describe("createAssortmentItemFromOfferLine", () => {
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
     mockProductVariantFindFirst.mockResolvedValue({ id: "variant-1" });
     mockPackagingWeightProfileFindFirst.mockResolvedValue(null);
-    mockPackagingWeightProfileCreate.mockResolvedValue({ id: "brand-new-profile" });
+    mockPackagingWeightProfileCreate.mockResolvedValue({
+      id: "brand-new-profile",
+      boxType: "QB",
+      stemsPerBox: 100,
+      weightPerBoxKg: { toString: () => "8.000" },
+    });
 
     const result = await createAssortmentItemFromOfferLine("line-1", createFormData());
 
@@ -280,6 +296,10 @@ describe("createAssortmentItemFromOfferLine", () => {
     expect(data.packagingWeightProfileId).toBe("brand-new-profile");
     expect(data.productVariantId).toBe("variant-1");
     expect(data.matchStatus).toBe("USER_LINKED");
+    // Task 1: the newly-created profile's own canonical packaging is persisted onto the line.
+    expect(data.boxType).toBe("QB");
+    expect(data.stemsPerBox).toBe(100);
+    expect(data.weightPerBoxKg).toBe("8.000");
   });
 
   it("rejects when the offer has no supplier at all", async () => {
@@ -316,6 +336,208 @@ describe("createAssortmentItemFromOfferLine", () => {
     expect(mockPackagingWeightProfileCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ farmId: FARM_ID }) }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 1: canonical packaging enrichment - regression suite
+// ---------------------------------------------------------------------------
+// Real-world bug: "5hb candy xpression 60cm" was matched via a saved
+// SupplierLineMapping (or a manual "Change match"), showing "Manually
+// matched" with the correct product/variety/length/quantity/price, but
+// stemsPerBox and box weight stayed empty and the "stemsPerBox not stated" /
+// "Totaal aantal stelen kon niet worden berekend" warnings never cleared -
+// because `selectPackagingProfile` and `createAssortmentItemFromOfferLine`
+// linked the profile without ever copying ITS canonical packaging onto the
+// line, unlike the upload-time enrichment AUTO_MATCHED/mapped lines already
+// got (see `uploadFarmOffer.test.ts`, tests "1-9" and "17"). This suite
+// covers the exact scenario end to end, plus the shared invariants: warnings
+// clear, extractedSnapshot is never touched, and enrichment never fires
+// without a confirmed single profile or across suppliers.
+
+describe("Task 1: canonical packaging enrichment - regression suite", () => {
+  it("3/5/6: Candy X-Pression - manual selection resolves stemsPerBox/weight, computes totalStems (5x100=500), and clears the stale warnings", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(
+      baseFarmOfferLine({
+        rawText: "5hb candy xpression 60cm",
+        varietyRaw: "Candy X-Pression",
+        boxType: null,
+        stemsPerBox: null,
+        weightPerBoxKg: null,
+        quantity: { toString: () => "5" },
+        unit: "BOXES",
+        matchStatus: "UNMATCHED",
+        packagingWeightProfileId: null,
+        extractedSnapshot: {
+          parserWarnings: ["stemsPerBox not stated.", "Totaal aantal stelen kon niet worden berekend."],
+        },
+      }),
+    );
+    mockPackagingWeightProfileFindUnique.mockResolvedValue({
+      id: "profile-candy",
+      farmId: FARM_ID,
+      productVariantId: "variant-candy",
+      boxType: "QB",
+      stemsPerBox: 100,
+      weightPerBoxKg: { toString: () => "8.000" },
+    });
+
+    const result = await selectPackagingProfile("line-1", "profile-candy");
+
+    expect(result.ok).toBe(true);
+    const data = mockFarmOfferLineUpdate.mock.calls[0][0].data;
+    expect(data.boxType).toBe("QB");
+    expect(data.stemsPerBox).toBe(100);
+    expect(data.weightPerBoxKg).toBe("8.000");
+    expect(data.totalStems).toBe(500);
+    // 6: the now-resolved warnings are gone from the CURRENT validationWarnings.
+    expect(data.validationWarnings ?? []).not.toContain("stemsPerBox not stated.");
+    expect(data.validationWarnings ?? []).not.toContain("Totaal aantal stelen kon niet worden berekend.");
+  });
+
+  it("4: a newly-created assortment item also resolves stemsPerBox/weight and totalStems", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(
+      baseFarmOfferLine({
+        boxType: null,
+        stemsPerBox: null,
+        weightPerBoxKg: null,
+        quantity: { toString: () => "5" },
+        unit: "BOXES",
+        matchStatus: "UNMATCHED",
+        packagingWeightProfileId: null,
+      }),
+    );
+    mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rosa Ec" });
+    mockProductVariantFindFirst.mockResolvedValue({ id: "variant-candy" });
+    mockPackagingWeightProfileFindFirst.mockResolvedValue(null);
+    mockPackagingWeightProfileCreate.mockResolvedValue({
+      id: "profile-candy",
+      boxType: "QB",
+      stemsPerBox: 100,
+      weightPerBoxKg: { toString: () => "8.000" },
+    });
+
+    const fd = new FormData();
+    fd.set("productName", "Rosa Ec");
+    fd.set("variety", "Candy X-Pression");
+    fd.set("stemLength", "60");
+    fd.set("boxType", "QB");
+    fd.set("stemsPerBox", "100");
+    fd.set("weightPerBoxKg", "8");
+    const result = await createAssortmentItemFromOfferLine("line-1", fd);
+
+    expect(result.ok).toBe(true);
+    const data = mockFarmOfferLineUpdate.mock.calls[0][0].data;
+    expect(data.stemsPerBox).toBe(100);
+    expect(data.weightPerBoxKg).toBe("8.000");
+    expect(data.totalStems).toBe(500);
+  });
+
+  it("1/2 (regression guard): a rematch onto AUTO_MATCHED also applies the new profile's canonical packaging, not the stale form values", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
+    mockPackagingWeightProfileFindMany.mockResolvedValue([
+      profileRow({
+        id: "profile-freedom",
+        productVariantId: "variant-freedom",
+        boxType: "HB",
+        stemsPerBox: 12,
+        weightPerBoxKg: { toString: () => "4.500" },
+        productVariant: { productId: "p1", variety: "Freedom", stemLength: "60 cm", product: { name: "Rosa Ec" } },
+      }),
+    ]);
+
+    // The form still carries the OLD product's packaging (100/QB/8) - the
+    // corrected variety rematches to a DIFFERENT profile whose own canonical
+    // values (HB/12/4.500) must win instead.
+    const result = await updateOfferLine(
+      "line-1",
+      updateFormData({ varietyRaw: "Freedom", quantity: "5", unit: "BOXES" }),
+    );
+
+    expect(result.ok).toBe(true);
+    const data = mockFarmOfferLineUpdate.mock.calls[0][0].data;
+    expect(data.matchStatus).toBe("AUTO_MATCHED");
+    expect(data.boxType).toBe("HB");
+    expect(data.stemsPerBox).toBe(12);
+    expect(data.weightPerBoxKg).toBe("4.500");
+    expect(data.totalStems).toBe(60); // 5 boxes x 12 stems
+  });
+
+  it("8: no enrichment occurs for AMBIGUOUS - the reviewer's own typed packaging is preserved untouched", async () => {
+    // Existing variety differs from the submitted one, so a rematch actually
+    // triggers (a no-op edit never re-queries the assortment at all).
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine({ varietyRaw: "OldVariety" }));
+    // Two packagings for the SAME product/variety/length -> AMBIGUOUS status,
+    // no single profile to trust.
+    mockPackagingWeightProfileFindMany.mockResolvedValue([
+      profileRow({ id: "p-qb", boxType: "QB", stemsPerBox: 100 }),
+      profileRow({ id: "p-hb", boxType: "HB", stemsPerBox: 200 }),
+    ]);
+
+    const result = await updateOfferLine(
+      "line-1",
+      updateFormData({ varietyRaw: "Dallas", boxType: "FB", stemsPerBox: "77", weightPerBoxKg: "3.3" }),
+    );
+
+    expect(result.ok).toBe(true);
+    const data = mockFarmOfferLineUpdate.mock.calls[0][0].data;
+    expect(data.matchStatus).toBe("AMBIGUOUS");
+    // No confirmed single profile - the reviewer's own typed values survive.
+    expect(data.boxType).toBe("FB");
+    expect(data.stemsPerBox).toBe(77);
+    expect(data.weightPerBoxKg).toBe("3.3");
+  });
+
+  it("8 (UNMATCHED): no enrichment occurs when correction lands on UNMATCHED either", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
+    mockPackagingWeightProfileFindMany.mockResolvedValue([profileRow()]);
+
+    const result = await updateOfferLine(
+      "line-1",
+      updateFormData({ varietyRaw: "Dalas", boxType: "FB", stemsPerBox: "77", weightPerBoxKg: "3.3" }),
+    );
+
+    expect(result.ok).toBe(true);
+    const data = mockFarmOfferLineUpdate.mock.calls[0][0].data;
+    expect(data.matchStatus).toBe("UNMATCHED");
+    expect(data.boxType).toBe("FB");
+    expect(data.stemsPerBox).toBe(77);
+    expect(data.weightPerBoxKg).toBe("3.3");
+  });
+
+  it("7: extractedSnapshot is never part of the update payload - the audit trail stays untouched by enrichment", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
+    mockPackagingWeightProfileFindUnique.mockResolvedValue({
+      id: "profile-hb",
+      farmId: FARM_ID,
+      productVariantId: "variant-hb",
+      boxType: "HB",
+      stemsPerBox: 12,
+      weightPerBoxKg: { toString: () => "4.500" },
+    });
+
+    await selectPackagingProfile("line-1", "profile-hb");
+
+    const data = mockFarmOfferLineUpdate.mock.calls[0][0].data;
+    expect(data).not.toHaveProperty("extractedSnapshot");
+    expect(data).not.toHaveProperty("rawText");
+  });
+
+  it("9: a profile from another supplier can never enrich the line (rejected before any update)", async () => {
+    mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine());
+    mockPackagingWeightProfileFindUnique.mockResolvedValue({
+      id: "profile-other-farm",
+      farmId: "farm-other",
+      productVariantId: "variant-x",
+      boxType: "FB",
+      stemsPerBox: 999,
+      weightPerBoxKg: { toString: () => "1.000" },
+    });
+
+    const result = await selectPackagingProfile("line-1", "profile-other-farm");
+
+    expect(result.ok).toBe(false);
+    expect(mockFarmOfferLineUpdate).not.toHaveBeenCalled();
   });
 });
 
