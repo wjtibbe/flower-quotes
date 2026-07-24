@@ -202,7 +202,14 @@ export async function uploadFarmOffer(_prevState: UploadFormState, formData: For
       ? (assortmentCandidates.find((c) => c.packagingWeightProfileId === match.packagingWeightProfileId) ?? null)
       : null;
     const matchedPackaging: MatchedPackagingInfo | null = matchedCandidate
-      ? { boxType: matchedCandidate.boxType, stemsPerBox: matchedCandidate.stemsPerBox, weightPerBoxKg: matchedCandidate.boxWeight }
+      ? {
+          boxType: matchedCandidate.boxType,
+          stemsPerBox: matchedCandidate.stemsPerBox,
+          weightPerBoxKg: matchedCandidate.boxWeight,
+          productName: matchedCandidate.productName,
+          variety: matchedCandidate.variety,
+          stemLength: matchedCandidate.stemLength,
+        }
       : null;
     return enrichParsedOfferLine(line, matchedPackaging, farm.defaultCurrency);
   });
@@ -343,6 +350,9 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
   let effectiveStemsPerBox = stemsPerBox;
   let effectiveWeightPerBoxKg = weightPerBoxKg;
   let effectiveTotalStems = totalStems;
+  let effectiveProductGroupRaw = productGroupRaw;
+  let effectiveVarietyRaw = varietyRaw;
+  let effectiveStemLengthCm = stemLengthCm;
 
   if (haveMatchAffectingFieldsChanged(before, after)) {
     // Section 14: a match-affecting correction invalidates any existing link
@@ -373,7 +383,14 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
           : undefined;
       if (matchedCandidate) {
         const canonical = applyCanonicalPackaging(
-          { boxType: matchedCandidate.boxType, stemsPerBox: matchedCandidate.stemsPerBox, weightPerBoxKg: matchedCandidate.boxWeight },
+          {
+            boxType: matchedCandidate.boxType,
+            stemsPerBox: matchedCandidate.stemsPerBox,
+            weightPerBoxKg: matchedCandidate.boxWeight,
+            productName: matchedCandidate.productName,
+            variety: matchedCandidate.variety,
+            stemLength: matchedCandidate.stemLength,
+          },
           quantityNumber,
           unit as OfferUnitLike | null,
         );
@@ -381,6 +398,9 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
         effectiveStemsPerBox = canonical.stemsPerBox;
         effectiveWeightPerBoxKg = canonical.weightPerBoxKg;
         effectiveTotalStems = canonical.totalStems;
+        effectiveProductGroupRaw = canonical.productGroupRaw;
+        effectiveVarietyRaw = canonical.varietyRaw ?? effectiveVarietyRaw;
+        effectiveStemLengthCm = canonical.lengthCm ?? effectiveStemLengthCm;
       }
     } else {
       packagingWeightProfileId = null;
@@ -391,12 +411,12 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
 
   const { validationWarnings, validationErrors } = computeLineValidationMessages(existing.extractedSnapshot, {
     packagingWeightProfileId,
-    productGroupRaw,
-    varietyRaw,
+    productGroupRaw: effectiveProductGroupRaw,
+    varietyRaw: effectiveVarietyRaw,
     fobPricePerStem,
     currency,
     unit: unit as OfferUnitLike | null,
-    stemLengthCm,
+    stemLengthCm: effectiveStemLengthCm,
     quantity: quantityRaw,
     totalStems: effectiveTotalStems,
     boxesAvailable,
@@ -408,15 +428,15 @@ export async function updateOfferLine(lineId: string, formData: FormData): Promi
     await prisma.farmOfferLine.update({
       where: { id: lineId },
       data: {
-        productGroupRaw,
-        varietyRaw,
+        productGroupRaw: effectiveProductGroupRaw,
+        varietyRaw: effectiveVarietyRaw,
         colorRaw,
         gradeRaw,
         treatmentRaw,
         boxType: effectiveBoxType,
         boxesAvailable,
         stemsPerBox: effectiveStemsPerBox,
-        stemLengthCm,
+        stemLengthCm: effectiveStemLengthCm,
         quantity: quantityRaw,
         unit,
         totalStems: effectiveTotalStems,
@@ -466,33 +486,45 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
   });
   if (!line) return { ok: false, message: "Deze offerregel bestaat niet meer. Ververs de pagina." };
 
-  const profile = await prisma.packagingWeightProfile.findUnique({ where: { id: packagingWeightProfileId } });
+  const profile = await prisma.packagingWeightProfile.findUnique({
+    where: { id: packagingWeightProfileId },
+    include: { productVariant: { include: { product: true } } },
+  });
   const validation = validatePackagingWeightProfileSelection({
     offerFarmId: line.farmOffer.farmId,
     packagingWeightProfile: profile,
   });
   if (!validation.ok) return { ok: false, message: validation.message };
 
-  // Task 1 (canonical packaging): a manually chosen profile is just as much a
+  // Task 1 (canonical packaging) + the Boulevard/SupplierLineMapping fix
+  // (canonical identity): a manually chosen profile is just as much a
   // CONFIRMED single-profile match as an AUTO_MATCHED one - its own
-  // boxType/stemsPerBox/weightPerBoxKg become the line's CURRENT values via
-  // the same shared computation `enrichParsedOfferLine` uses at import time,
-  // so the supplier never needs to have stated them and totalStems becomes
-  // calculable. `rawText`/`extractedSnapshot` are never touched here.
+  // boxType/stemsPerBox/weightPerBoxKg AND its Product.name/variety become
+  // the line's CURRENT values via the same shared computation
+  // `enrichParsedOfferLine` uses at import time, so the supplier never needs
+  // to have stated them and totalStems becomes calculable. `rawText`/
+  // `extractedSnapshot` are never touched here.
   const canonical = applyCanonicalPackaging(
-    { boxType: profile!.boxType, stemsPerBox: profile!.stemsPerBox, weightPerBoxKg: profile!.weightPerBoxKg.toString() },
+    {
+      boxType: profile!.boxType,
+      stemsPerBox: profile!.stemsPerBox,
+      weightPerBoxKg: profile!.weightPerBoxKg.toString(),
+      productName: profile!.productVariant.product.name,
+      variety: profile!.productVariant.variety,
+      stemLength: profile!.productVariant.stemLength,
+    },
     line.quantity !== null ? Number(line.quantity) : null,
     line.unit as OfferUnitLike | null,
   );
 
   const { validationWarnings, validationErrors } = computeLineValidationMessages(line.extractedSnapshot, {
     packagingWeightProfileId: profile!.id,
-    productGroupRaw: line.productGroupRaw,
-    varietyRaw: line.varietyRaw,
+    productGroupRaw: canonical.productGroupRaw,
+    varietyRaw: canonical.varietyRaw ?? line.varietyRaw,
     fobPricePerStem: line.fobPricePerStem?.toString() ?? null,
     currency: line.currency,
     unit: line.unit as OfferUnitLike | null,
-    stemLengthCm: line.stemLengthCm,
+    stemLengthCm: canonical.lengthCm ?? line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
     totalStems: canonical.totalStems,
     boxesAvailable: line.boxesAvailable,
@@ -507,6 +539,9 @@ export async function selectPackagingProfile(lineId: string, packagingWeightProf
         packagingWeightProfileId: profile!.id,
         productVariantId: profile!.productVariantId,
         matchStatus: LineMatchStatus.USER_LINKED,
+        productGroupRaw: canonical.productGroupRaw,
+        varietyRaw: canonical.varietyRaw ?? line.varietyRaw,
+        stemLengthCm: canonical.lengthCm ?? line.stemLengthCm,
         boxType: canonical.boxType,
         stemsPerBox: canonical.stemsPerBox,
         weightPerBoxKg: canonical.weightPerBoxKg,
@@ -579,25 +614,34 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
     };
   }
 
-  // Task 1 (canonical packaging): use the RESOLVED profile's own canonical
-  // values (`created.boxType`/`stemsPerBox`/`weightPerBoxKg`), never the raw
-  // form input directly - `findOrCreatePackagingWeightProfile` may have
-  // reused an EXISTING profile whose own values differ from what was typed.
-  // Same shared computation as every other confirmed-match path.
+  // Task 1 (canonical packaging) + the Boulevard/SupplierLineMapping fix
+  // (canonical identity): use the RESOLVED profile's own canonical values
+  // (`created.boxType`/`stemsPerBox`/`weightPerBoxKg`/`productName`/
+  // `variety`), never the raw form input directly -
+  // `findOrCreatePackagingWeightProfile` may have reused an EXISTING
+  // profile whose own values differ from what was typed. Same shared
+  // computation as every other confirmed-match path.
   const canonical = applyCanonicalPackaging(
-    { boxType: created.boxType, stemsPerBox: created.stemsPerBox, weightPerBoxKg: created.weightPerBoxKg },
+    {
+      boxType: created.boxType,
+      stemsPerBox: created.stemsPerBox,
+      weightPerBoxKg: created.weightPerBoxKg,
+      productName: created.productName,
+      variety: created.variety,
+      stemLength: created.stemLength,
+    },
     line.quantity !== null ? Number(line.quantity) : null,
     line.unit as OfferUnitLike | null,
   );
 
   const { validationWarnings, validationErrors } = computeLineValidationMessages(line.extractedSnapshot, {
     packagingWeightProfileId: created.packagingWeightProfileId,
-    productGroupRaw: line.productGroupRaw,
-    varietyRaw: line.varietyRaw,
+    productGroupRaw: canonical.productGroupRaw,
+    varietyRaw: canonical.varietyRaw ?? line.varietyRaw,
     fobPricePerStem: line.fobPricePerStem?.toString() ?? null,
     currency: line.currency,
     unit: line.unit as OfferUnitLike | null,
-    stemLengthCm: line.stemLengthCm,
+    stemLengthCm: canonical.lengthCm ?? line.stemLengthCm,
     quantity: line.quantity?.toString() ?? null,
     totalStems: canonical.totalStems,
     boxesAvailable: line.boxesAvailable,
@@ -612,6 +656,9 @@ export async function createAssortmentItemFromOfferLine(lineId: string, formData
         packagingWeightProfileId: created.packagingWeightProfileId,
         productVariantId: created.productVariantId,
         matchStatus: LineMatchStatus.USER_LINKED,
+        productGroupRaw: canonical.productGroupRaw,
+        varietyRaw: canonical.varietyRaw ?? line.varietyRaw,
+        stemLengthCm: canonical.lengthCm ?? line.stemLengthCm,
         boxType: canonical.boxType,
         stemsPerBox: canonical.stemsPerBox,
         weightPerBoxKg: canonical.weightPerBoxKg,

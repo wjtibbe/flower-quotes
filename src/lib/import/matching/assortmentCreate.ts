@@ -32,6 +32,10 @@ export interface CreateAssortmentItemResult {
   boxType: string;
   stemsPerBox: number;
   weightPerBoxKg: string;
+  /** The resolved Product's own canonical name/variety/stemLength - same reuse-not-input caveat as above. */
+  productName: string;
+  variety: string | null;
+  stemLength: string | null;
 }
 
 /**
@@ -118,5 +122,8 @@ export async function findOrCreatePackagingWeightProfile(
     boxType: profile.boxType,
     stemsPerBox: profile.stemsPerBox,
     weightPerBoxKg: profile.weightPerBoxKg.toString(),
+    productName: product.name,
+    variety: variant.variety,
+    stemLength: variant.stemLength,
   };
 }

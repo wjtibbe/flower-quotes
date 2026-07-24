@@ -1,4 +1,5 @@
 import { calculateTotalStems } from "./offerLineMapping";
+import { parseLengthSpec } from "./rangeExpansion";
 import type { OfferUnitLike, ParsedOfferLine } from "./types";
 
 /**
@@ -21,16 +22,20 @@ import type { OfferUnitLike, ParsedOfferLine } from "./types";
  * supplier wrote and what the AI originally extracted, HB included.
  *
  * Field precedence implemented here:
- *  - Packaging (boxType/stemsPerBox/weightPerBoxKg): once a line has
- *    matched a SINGLE concrete `PackagingWeightProfile` (AUTO_MATCHED,
- *    DERIVED, or USER_LINKED via a saved SupplierLineMapping - never
- *    AMBIGUOUS/UNMATCHED, which have no single profile to trust), that
- *    profile's canonical values ALWAYS win - overriding whatever (if
- *    anything) the supplier text/AI extraction stated, since suppliers
- *    essentially never state stemsPerBox/box weight explicitly and the
- *    profile is this app's own trusted assortment record for exactly this
- *    farm + product + variety + length + box type. Unmatched lines are left
- *    untouched (nothing trusted to enrich from).
+ *  - Packaging AND product identity (boxType/stemsPerBox/weightPerBoxKg,
+ *    productGroupRaw/varietyRaw/lengthCm): once a line has matched a SINGLE
+ *    concrete `PackagingWeightProfile` (AUTO_MATCHED, DERIVED, or
+ *    USER_LINKED via a saved SupplierLineMapping - never AMBIGUOUS/
+ *    UNMATCHED, which have no single profile to trust), that profile's (and
+ *    its ProductVariant/Product's) canonical values ALWAYS win - overriding
+ *    whatever (if anything) the supplier text/AI extraction stated. This
+ *    matters just as much for identity as for packaging: a supplier's raw
+ *    source line can omit the product group entirely on a re-import (e.g.
+ *    "1hb boulevard 40cm" - no "Rosa" anywhere), and the AI extraction is
+ *    re-run fresh each time, so it must never be trusted over the app's own
+ *    confirmed assortment record for exactly this farm + product + variety +
+ *    length + box type. Unmatched lines are left untouched (nothing trusted
+ *    to enrich from).
  *  - Currency: an explicit source currency ALWAYS wins. Otherwise the
  *    supplier's own configured `Farm.defaultCurrency` (every farm has one,
  *    defaulting to USD) is trusted configuration and counts as RESOLVED
@@ -50,12 +55,26 @@ import type { OfferUnitLike, ParsedOfferLine } from "./types";
 // Packaging enrichment
 // ---------------------------------------------------------------------------
 
-/** The canonical packaging fields a matched `PackagingWeightProfile` contributes. */
+/**
+ * The canonical fields a matched `PackagingWeightProfile` (and its
+ * `ProductVariant`/`Product`) contributes: packaging AND product identity.
+ * A supplier's raw source line may re-state the same article with a
+ * different (or missing) product group each time it's re-imported - e.g.
+ * "1hb boulevard 40cm" carries no product group at all, only a variety - so
+ * once a single profile is confirmed, its OWN Product.name/variety are the
+ * trusted identity, exactly like its packaging already was.
+ */
 export interface MatchedPackagingInfo {
   boxType: string;
   stemsPerBox: number;
   /** Decimal string, e.g. "7.000". */
   weightPerBoxKg: string;
+  /** Canonical `Product.name`, e.g. "Rosa Ec" - never null, every Product has one. */
+  productName: string;
+  /** Canonical `ProductVariant.variety`, e.g. "Boulevard". */
+  variety: string | null;
+  /** Canonical `ProductVariant.stemLength`, free text (e.g. "40 cm") - parsed to `lengthCm` below only when it's an unambiguous single length. */
+  stemLength: string | null;
 }
 
 export interface CanonicalPackagingFields {
@@ -63,32 +82,44 @@ export interface CanonicalPackagingFields {
   stemsPerBox: number;
   weightPerBoxKg: string;
   totalStems: number | null;
+  /** Canonical product group - always present (see `MatchedPackagingInfo.productName`). */
+  productGroupRaw: string;
+  /** Canonical variety - null when the matched variant itself has none recorded; callers should keep the line's existing value in that case rather than blanking it. */
+  varietyRaw: string | null;
+  /** Canonical length in cm, parsed from the variant's own stemLength text - null when that text isn't a clean single length (missing, or a range); callers should keep the line's existing value in that case. */
+  lengthCm: number | null;
 }
 
 /**
- * Computes the canonical packaging fields (boxType/stemsPerBox/weightPerBoxKg)
- * a CONFIRMED single `PackagingWeightProfile` match contributes to a line's
+ * Computes the canonical fields (packaging AND product identity) a
+ * CONFIRMED single `PackagingWeightProfile` match contributes to a line's
  * CURRENT/effective state, plus the resulting `totalStems` for the line's
  * current quantity/unit. This is the ONE shared computation used by every
  * path that confirms a profile match on a line - import-time enrichment
- * (`enrichParsedOfferLine`, below) and every post-import action that links a
+ * (`enrichParsedOfferLine`, below, covering AUTO_MATCHED/DERIVED/USER_LINKED
+ * via a SupplierLineMapping) and every post-import action that links a
  * profile (`selectPackagingProfile`, `createAssortmentItemFromOfferLine`, and
- * a rematch inside `updateOfferLine` that lands on AUTO_MATCHED/DERIVED) - so
- * a line's canonical packaging is always derived the same way regardless of
- * HOW the profile became confirmed. The supplier's own source text never
- * needs to state stemsPerBox/box weight explicitly: once a single profile is
- * confirmed, IT is the trusted source, never the (usually absent) source value.
+ * a rematch inside `updateOfferLine`) - so a line's canonical identity AND
+ * packaging are always derived the same way regardless of HOW the profile
+ * became confirmed. The supplier's own source text never needs to restate
+ * the product group, variety, stemsPerBox or box weight: once a single
+ * profile is confirmed, IT is the trusted source, never the source text
+ * (which may be absent, stale, or differently worded on a re-import).
  */
 export function applyCanonicalPackaging(
   matchedProfile: MatchedPackagingInfo,
   quantity: number | null,
   unit: OfferUnitLike | null,
 ): CanonicalPackagingFields {
+  const lengthSpec = parseLengthSpec(matchedProfile.stemLength);
   return {
     boxType: matchedProfile.boxType,
     stemsPerBox: matchedProfile.stemsPerBox,
     weightPerBoxKg: matchedProfile.weightPerBoxKg,
     totalStems: calculateTotalStems({ quantity, unit, stemsPerBox: matchedProfile.stemsPerBox }),
+    productGroupRaw: matchedProfile.productName,
+    varietyRaw: matchedProfile.variety,
+    lengthCm: lengthSpec.kind === "single" ? lengthSpec.cm : null,
   };
 }
 
@@ -223,8 +254,12 @@ export function enrichParsedOfferLine(
     next = { ...next, quantity: String(next.boxesAvailable), unit: "BOXES" };
   }
 
-  // Canonical packaging from the matched PackagingWeightProfile - the SAME
-  // shared computation every other confirmed-match path uses.
+  // Canonical packaging AND product identity from the matched
+  // PackagingWeightProfile - the SAME shared computation every other
+  // confirmed-match path uses. productGroupRaw is always overwritten (every
+  // Product has a name); varietyRaw/lengthCm only when the matched variant
+  // itself has a clean value to offer, so a genuinely-unset variant field
+  // never blanks out something the line already had.
   if (matchedProfile) {
     const canonical = applyCanonicalPackaging(
       matchedProfile,
@@ -236,6 +271,9 @@ export function enrichParsedOfferLine(
       boxType: canonical.boxType,
       stemsPerBox: canonical.stemsPerBox,
       weightPerBoxKg: canonical.weightPerBoxKg,
+      productGroupRaw: canonical.productGroupRaw,
+      varietyRaw: canonical.varietyRaw ?? next.varietyRaw,
+      lengthCm: canonical.lengthCm ?? next.lengthCm,
     };
   }
 

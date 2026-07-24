@@ -222,6 +222,7 @@ describe("selectPackagingProfile - manual selection", () => {
       boxType: "HB",
       stemsPerBox: 12,
       weightPerBoxKg: { toString: () => "4.500" },
+      productVariant: { variety: "Freedom", stemLength: "60 cm", product: { name: "Rosa Ec" } },
     });
 
     const result = await selectPackagingProfile("line-1", "profile-hb");
@@ -235,6 +236,10 @@ describe("selectPackagingProfile - manual selection", () => {
     expect(data.boxType).toBe("HB");
     expect(data.stemsPerBox).toBe(12);
     expect(data.weightPerBoxKg).toBe("4.500");
+    // Boulevard fix: canonical product identity is now persisted too.
+    expect(data.productGroupRaw).toBe("Rosa Ec");
+    expect(data.varietyRaw).toBe("Freedom");
+    expect(data.stemLengthCm).toBe(60);
   });
 
   it("rejects a profile belonging to a different farm", async () => {
@@ -280,7 +285,7 @@ describe("createAssortmentItemFromOfferLine", () => {
   it("creates and immediately links a new assortment item, setting USER_LINKED", async () => {
     mockFarmOfferLineFindUnique.mockResolvedValue(baseFarmOfferLine({ matchStatus: "UNMATCHED", packagingWeightProfileId: null }));
     mockProductFindFirst.mockResolvedValue({ id: "product-1", name: "Rose" });
-    mockProductVariantFindFirst.mockResolvedValue({ id: "variant-1" });
+    mockProductVariantFindFirst.mockResolvedValue({ id: "variant-1", variety: "Dallas", stemLength: "60 cm" });
     mockPackagingWeightProfileFindFirst.mockResolvedValue(null);
     mockPackagingWeightProfileCreate.mockResolvedValue({
       id: "brand-new-profile",
@@ -300,6 +305,10 @@ describe("createAssortmentItemFromOfferLine", () => {
     expect(data.boxType).toBe("QB");
     expect(data.stemsPerBox).toBe(100);
     expect(data.weightPerBoxKg).toBe("8.000");
+    // Boulevard fix: the resolved product's canonical identity is persisted too.
+    expect(data.productGroupRaw).toBe("Rose");
+    expect(data.varietyRaw).toBe("Dallas");
+    expect(data.stemLengthCm).toBe(60);
   });
 
   it("rejects when the offer has no supplier at all", async () => {
@@ -380,6 +389,7 @@ describe("Task 1: canonical packaging enrichment - regression suite", () => {
       boxType: "QB",
       stemsPerBox: 100,
       weightPerBoxKg: { toString: () => "8.000" },
+      productVariant: { variety: "Candy X-Pression", stemLength: "60 cm", product: { name: "Rosa Ec" } },
     });
 
     const result = await selectPackagingProfile("line-1", "profile-candy");
@@ -514,6 +524,7 @@ describe("Task 1: canonical packaging enrichment - regression suite", () => {
       boxType: "HB",
       stemsPerBox: 12,
       weightPerBoxKg: { toString: () => "4.500" },
+      productVariant: { variety: "Freedom", stemLength: "60 cm", product: { name: "Rosa Ec" } },
     });
 
     await selectPackagingProfile("line-1", "profile-hb");

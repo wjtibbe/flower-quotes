@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { validateOfferLineForFinalization } from "@/lib/import/offerLineValidation";
 
 // Mocks every side-effecting dependency `uploadFarmOffer` touches (session,
 // database, navigation, and the import pipeline itself) so these tests
@@ -426,6 +427,11 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     // 5/6: canonical stemsPerBox/weightPerBoxKg from the matched profile.
     expect(createdLine.stemsPerBox).toBe(125);
     expect(createdLine.weightPerBoxKg).toBe("7.000");
+    // H (Boulevard fix regression): AUTO_MATCHED also supplies canonical
+    // product identity from the matched profile's own Product/ProductVariant.
+    expect(createdLine.productGroupRaw).toBe("Rosa Ec");
+    expect(createdLine.varietyRaw).toBe("Sweetness");
+    expect(createdLine.stemLengthCm).toBe(40);
     // 7: quantity(2 boxes) x stemsPerBox(125) = totalStems 250.
     expect(createdLine.quantity).toBe("2");
     expect(createdLine.unit).toBe("BOXES");
@@ -564,5 +570,80 @@ describe("uploadFarmOffer - deterministic enrichment from trusted data", () => {
     // deterministic engine's candidate.
     expect(createdLine.stemsPerBox).toBe(200);
     expect(createdLine.weightPerBoxKg).toBe("9.000");
+  });
+
+  // Boulevard regression (real production case): the exact same supplier
+  // text is re-imported with only the price changed, matched via a saved
+  // SupplierLineMapping - but this time the source line itself states NO
+  // product group at all ("1hb boulevard 40cm"), which used to leave
+  // productGroupRaw empty and block finalization with "Productgroep
+  // ontbreekt." even though the match was fully confirmed.
+  it("A/F: SupplierLineMapping match supplies canonical product identity even when the source states none at all - 0 blocking errors", async () => {
+    mockFarmFindUnique.mockResolvedValue({ name: "Mystic Flowers", country: "Colombia", defaultCurrency: "USD" });
+    mockSupplierLineMappingFindMany.mockResolvedValue([
+      {
+        id: "mapping-boulevard",
+        farmId: "farm-1",
+        normalizedSource: "1hb boulevard 40cm",
+        packagingWeightProfileId: "profile-boulevard",
+        packagingWeightProfile: { farmId: "farm-1", productVariantId: "variant-boulevard" },
+      },
+    ]);
+    mockPackagingWeightProfileFindMany.mockResolvedValue([
+      {
+        id: "profile-boulevard",
+        farmId: "farm-1",
+        productVariantId: "variant-boulevard",
+        boxType: "QB",
+        stemsPerBox: 125,
+        weightPerBoxKg: { toString: () => "7.000" },
+        productVariant: { productId: "product-rosa-ec", variety: "Boulevard", stemLength: "40 cm", product: { name: "Rosa Ec" } },
+      },
+    ]);
+    mockRunPastedTextImport.mockResolvedValue({
+      sourceKind: "MANUAL",
+      rawText: "1hb boulevard 40cm",
+      lines: [
+        {
+          rawText: "1hb boulevard 40cm",
+          productGroupRaw: undefined, // the source states no product group at all
+          varietyRaw: "boulevard",
+          lengthCm: 40,
+          boxType: "HB",
+          boxesAvailable: 1,
+          fobPricePerStem: "0.20",
+          confidence: "medium",
+          fieldConfidence: {},
+          needsReview: true,
+          parserWarnings: [],
+        },
+      ],
+    });
+
+    await uploadFarmOffer({}, formDataWithText("farm-1", "1hb boulevard 40cm"));
+
+    const createdLine = mockFarmOfferCreate.mock.calls[0][0].data.lines.create[0];
+    expect(createdLine.matchStatus).toBe("USER_LINKED");
+    expect(createdLine.productGroupRaw).toBe("Rosa Ec");
+    expect(createdLine.varietyRaw).toBe("Boulevard");
+    expect(createdLine.stemLengthCm).toBe(40);
+    expect(createdLine.boxType).toBe("QB");
+    expect(createdLine.stemsPerBox).toBe(125);
+    expect(createdLine.weightPerBoxKg).toBe("7.000");
+    expect(createdLine.totalStems).toBe(125);
+
+    // F: 0 blocking errors once the canonical identity is in place.
+    const finalizationCheck = validateOfferLineForFinalization({
+      packagingWeightProfileId: createdLine.packagingWeightProfileId,
+      productGroupRaw: createdLine.productGroupRaw,
+      varietyRaw: createdLine.varietyRaw,
+      fobPricePerStem: createdLine.fobPricePerStem,
+      currency: createdLine.currency,
+      unit: createdLine.unit,
+      stemLengthCm: createdLine.stemLengthCm,
+      quantity: createdLine.quantity,
+      totalStems: createdLine.totalStems,
+    });
+    expect(finalizationCheck.errors).toEqual([]);
   });
 });
