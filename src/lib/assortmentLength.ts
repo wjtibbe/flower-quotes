@@ -37,3 +37,27 @@ export function normalizeAssortmentStemLength(input: string): NormalizeAssortmen
 
   return { ok: true, value: String(parsed) };
 }
+
+// A single, unambiguous trailing "<number>cm" (any casing, optional space)
+// at the very END of a variety string - e.g. "Shiny Copper Premium 18cm".
+// Deliberately anchored ($) and requires a preceding whitespace boundary, so
+// it never matches a number that's merely somewhere inside a longer variety
+// name, and never fires more than once.
+const TRAILING_LENGTH_PATTERN = /\s(\d+)\s*cm$/i;
+
+/**
+ * Best-effort, deterministic Length prefill for a legacy row whose Variety
+ * text still carries an explicit trailing length ("Shiny Copper Premium
+ * 18cm") while the row's own Length is empty. Convenience ONLY - never
+ * mutates Variety, and returns null for anything not an unambiguous single
+ * trailing match (no guessing which number in a longer text might be a
+ * length). The caller decides whether/how to use this as a form default.
+ */
+export function detectTrailingLengthHint(variety: string | null | undefined): string | null {
+  if (!variety) return null;
+  const match = variety.match(TRAILING_LENGTH_PATTERN);
+  if (!match) return null;
+  const parsed = parseInt(match[1], 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return String(parsed);
+}

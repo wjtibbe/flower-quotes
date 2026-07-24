@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeAssortmentStemLength } from "../assortmentLength";
+import { detectTrailingLengthHint, normalizeAssortmentStemLength } from "../assortmentLength";
 
 describe("normalizeAssortmentStemLength", () => {
   it('1: normalizes "50" to numeric "50"', () => {
@@ -50,5 +50,43 @@ describe("normalizeAssortmentStemLength", () => {
 
   it("does not treat a comma-decimal as valid (integer-only, no locale guessing)", () => {
     expect(normalizeAssortmentStemLength("50,5").ok).toBe(false);
+  });
+});
+
+describe("detectTrailingLengthHint", () => {
+  it('12: extracts "18" as a hint from "Shiny Copper Premium 18cm"', () => {
+    expect(detectTrailingLengthHint("Shiny Copper Premium 18cm")).toBe("18");
+  });
+
+  it("extracts a trailing length with a space before cm", () => {
+    expect(detectTrailingLengthHint("Shiny Copper Premium 18 cm")).toBe("18");
+  });
+
+  it("is case-insensitive for the cm suffix", () => {
+    expect(detectTrailingLengthHint("Shiny Copper Premium 18CM")).toBe("18");
+  });
+
+  it("returns null when there is no trailing length pattern", () => {
+    expect(detectTrailingLengthHint("Freedom")).toBeNull();
+  });
+
+  it("returns null for null/undefined/empty input", () => {
+    expect(detectTrailingLengthHint(null)).toBeNull();
+    expect(detectTrailingLengthHint(undefined)).toBeNull();
+    expect(detectTrailingLengthHint("")).toBeNull();
+  });
+
+  it("does not match a number that isn't at the very end (ambiguous placement)", () => {
+    expect(detectTrailingLengthHint("18cm Deluxe Edition")).toBeNull();
+  });
+
+  it("does not match a number with no cm suffix at all", () => {
+    expect(detectTrailingLengthHint("Freedom 18")).toBeNull();
+  });
+
+  it("never mutates or returns the variety text itself - only the numeric hint", () => {
+    const hint = detectTrailingLengthHint("Shiny Copper Premium 18cm");
+    expect(hint).not.toContain("Shiny");
+    expect(hint).toBe("18");
   });
 });

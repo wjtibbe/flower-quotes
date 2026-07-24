@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { fmtMoney } from "@/lib/format";
-import { normalizeAssortmentStemLength } from "@/lib/assortmentLength";
+import { detectTrailingLengthHint, normalizeAssortmentStemLength } from "@/lib/assortmentLength";
 import {
   headerCheckboxState,
   toggleAllSelection,
@@ -61,17 +61,19 @@ const emptyEdit: BulkEditInput = {
 type Modal = null | "edit" | "duplicate" | "delete";
 
 /**
- * Prefills the row edit form's numeric Length input. A `type="number"` input
- * silently shows blank for a non-numeric `defaultValue`, so an already-clean
- * value ("60") still prefills, while a legacy free-text value ("60 cm") -
- * not yet touched by the canonical-length normalization this edit form now
- * enforces - simply starts blank instead of showing something the browser
- * would reject anyway; the user just types the number, same as any other row.
+ * The Length input's initial value when a row's inline edit opens: the
+ * row's own (already-normalizable) length if it has one, otherwise a
+ * deterministic hint parsed off a legacy Variety's trailing "18cm"-style
+ * suffix (section 4) - convenience only, never blank-guessed, and NEVER
+ * changes Variety itself. Falls back to an empty field for the user to fill
+ * in themselves when neither is available/unambiguous.
  */
-function rowStemLengthDefault(stemLength: string | null): string {
-  if (!stemLength) return "";
-  const normalized = normalizeAssortmentStemLength(stemLength);
-  return normalized.ok ? normalized.value : "";
+function initialStemLengthFor(row: AssortmentRow): string {
+  if (row.stemLength) {
+    const normalized = normalizeAssortmentStemLength(row.stemLength);
+    if (normalized.ok) return normalized.value;
+  }
+  return detectTrailingLengthHint(row.variety) ?? "";
 }
 
 export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]; farms: FarmOption[] }) {
@@ -80,6 +82,10 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
   const [modal, setModal] = useState<Modal>(null);
   const [edit, setEdit] = useState<BulkEditInput>(emptyEdit);
   const [toast, setToast] = useState<{ ok: boolean; message: string } | null>(null);
+  // Only one row can be inline-edited at a time (section 6) - opening
+  // another row's edit simply replaces this, closing the previous one.
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
   const [isPending, startTransition] = useTransition();
   const headerRef = useRef<HTMLInputElement>(null);
 
@@ -126,13 +132,38 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
     });
   }
 
-  /** Per-row "Bewerken" save (Part B) - reports a duplicate/validation error via the same toast, never an unhandled throw. */
+  function startEdit(id: string) {
+    setEditingId(id);
+    setRowError(null);
+  }
+
+  function cancelEdit() {
+    // No server request, no DB change - just leaves edit mode (section 6).
+    setEditingId(null);
+    setRowError(null);
+  }
+
+  /**
+   * Per-row inline "Bewerken" save - reuses the SAME `updateSupplierLink`
+   * action from the previous task unchanged (safe ProductVariant re-linking,
+   * numeric length normalization, duplicate protection). On success the row
+   * returns to normal display with the refreshed values and the current
+   * page/search/filter state is preserved (`router.refresh()` re-fetches the
+   * SAME URL, it never navigates). On error, edit mode stays open and the
+   * message is shown inline next to that row, not as a page-wide toast.
+   */
   function runRowEdit(id: string, formData: FormData) {
     if (isPending) return;
     startTransition(async () => {
       const res = await updateSupplierLink(id, formData);
-      setToast(res);
-      if (res.ok) router.refresh();
+      if (res.ok) {
+        setToast(res);
+        setRowError(null);
+        setEditingId(null);
+        router.refresh();
+      } else {
+        setRowError({ id, message: res.message });
+      }
     });
   }
 
@@ -208,145 +239,21 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
             </tr>
           </thead>
           <tbody>
-            {rows.map((p) => {
-              const isSel = selectedVisible.includes(p.id);
-              return (
-                <tr key={p.id} className={isSel ? "bg-brand-50/50" : ""}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      aria-label={`Selecteer ${p.farmName} ${p.productName}`}
-                      checked={isSel}
-                      onChange={(e) => toggleOne(p.id, e.target.checked)}
-                    />
-                  </td>
-                  <td className="font-medium">
-                    {p.farmName}
-                    {p.supplierCode && <span className="ml-1 text-xs text-gray-400">({p.supplierCode})</span>}
-                  </td>
-                  <td>
-                    {p.productName}
-                    {(p.color || p.grade) && (
-                      <span className="text-xs text-gray-400"> {[p.color, p.grade].filter(Boolean).join(" ")}</span>
-                    )}
-                  </td>
-                  <td>{p.variety ?? "-"}</td>
-                  <td>{p.stemLength ?? "-"}</td>
-                  <td>
-                    {p.boxType} <span className="text-xs text-gray-400">({p.stemsPerBox} st)</span>
-                  </td>
-                  <td>{fmtMoney(p.weightPerBoxKg, 3)} kg</td>
-                  <td className="max-w-48 truncate" title={p.notes ?? ""}>
-                    {p.notes ?? "-"}
-                  </td>
-                  <td className="whitespace-nowrap">
-                    <details className="inline-block mr-2">
-                      <summary className="text-xs text-brand-600 cursor-pointer inline">Bewerken</summary>
-                      <form
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          runRowEdit(p.id, new FormData(e.currentTarget));
-                        }}
-                        className="mt-2 flex flex-wrap gap-2 items-end bg-gray-50 p-2 rounded"
-                      >
-                        <div>
-                          <label className="label">Leverancier</label>
-                          <select name="farmId" defaultValue={p.farmId} className="input py-1 text-xs">
-                            {farms.map((f) => (
-                              <option key={f.id} value={f.id}>
-                                {f.name}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                        <div>
-                          <label className="label">Variety</label>
-                          <input name="variety" required defaultValue={p.variety ?? ""} className="input py-1 text-xs w-28" />
-                        </div>
-                        <div>
-                          <label className="label">Lengte (cm)</label>
-                          <input
-                            name="stemLength"
-                            type="number"
-                            min={1}
-                            step={1}
-                            required
-                            defaultValue={rowStemLengthDefault(p.stemLength)}
-                            className="input py-1 text-xs w-20"
-                          />
-                        </div>
-                        <div>
-                          <label className="label">Code</label>
-                          <input name="supplierCode" defaultValue={p.supplierCode ?? ""} className="input py-1 text-xs w-24" />
-                        </div>
-                        <div>
-                          <label className="label">Box</label>
-                          <input name="boxType" defaultValue={p.boxType} className="input py-1 text-xs w-16" />
-                        </div>
-                        <div>
-                          <label className="label">Stelen/doos</label>
-                          <input name="stemsPerBox" type="number" required defaultValue={p.stemsPerBox} className="input py-1 text-xs w-20" />
-                        </div>
-                        <div>
-                          <label className="label">Gewicht (kg)</label>
-                          <input
-                            name="weightPerBoxKg"
-                            type="number"
-                            step="0.001"
-                            required
-                            defaultValue={p.weightPerBoxKg}
-                            className="input py-1 text-xs w-24"
-                          />
-                        </div>
-                        <div>
-                          <label className="label">Aantekeningen</label>
-                          <input name="notes" defaultValue={p.notes ?? ""} className="input py-1 text-xs w-40" />
-                        </div>
-                        <button className="btn-primary py-1 px-2 text-xs" disabled={isPending}>
-                          {isPending ? "Bezig..." : "Opslaan"}
-                        </button>
-                      </form>
-                    </details>
-                    {/* Secondary row actions collapsed behind a compact "..." menu (Task 3B). */}
-                    <details className="inline-block group">
-                      <summary className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer inline list-none w-5 text-center">
-                        <span aria-hidden>⋯</span>
-                        <span className="sr-only">Meer acties voor {p.farmName} {p.productName}</span>
-                      </summary>
-                      <div className="mt-2 bg-gray-50 p-2 rounded space-y-2 max-w-xs">
-                        <form action={duplicateSupplierLink.bind(null, p.id)} className="flex gap-2 items-end">
-                          <div>
-                            <label className="label">Naar leverancier</label>
-                            <select name="farmId" className="input py-1 text-xs" defaultValue="">
-                              <option value="" disabled>
-                                Kies leverancier...
-                              </option>
-                              {farms.map((f) => (
-                                <option key={f.id} value={f.id}>
-                                  {f.name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <button className="btn-secondary py-1 px-2 text-xs whitespace-nowrap">Dupliceren</button>
-                        </form>
-                        <form action={deleteSupplierLink.bind(null, p.id)}>
-                          <button
-                            className="text-xs text-red-600 hover:underline"
-                            onClick={(e) => {
-                              if (!window.confirm(`Weet je zeker dat je "${p.productName} ${p.variety ?? ""}" van ${p.farmName} wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`))
-                                e.preventDefault();
-                            }}
-                          >
-                            Verwijderen
-                          </button>
-                        </form>
-                      </div>
-                    </details>
-                  </td>
-                </tr>
-              );
-            })}
+            {rows.map((row) => (
+              <AssortmentTableRow
+                key={row.id}
+                row={row}
+                farms={farms}
+                isSelected={selectedVisible.includes(row.id)}
+                isEditing={editingId === row.id}
+                isPending={isPending}
+                errorMessage={rowError && rowError.id === row.id ? rowError.message : null}
+                onToggleSelect={(checked) => toggleOne(row.id, checked)}
+                onStartEdit={() => startEdit(row.id)}
+                onCancelEdit={cancelEdit}
+                onSave={(formData) => runRowEdit(row.id, formData)}
+              />
+            ))}
             {rows.length === 0 && (
               <tr>
                 <td colSpan={9} className="text-center text-gray-400 py-6">
@@ -520,6 +427,243 @@ export default function AssortmentTable({ rows, farms }: { rows: AssortmentRow[]
         </Modal>
       )}
     </div>
+  );
+}
+
+/**
+ * One Assortiment overview row - either the compact display cells, or (when
+ * `isEditing`) the SAME row with its cells swapped for inline inputs
+ * (section 1). Kept as its own component (rather than inline JSX in the
+ * `rows.map` above) so its edit-field state is a stable per-row React hook
+ * instance - required for the fields to reset correctly on Cancel (see the
+ * effect below) without violating the rules of hooks.
+ */
+function AssortmentTableRow({
+  row,
+  farms,
+  isSelected,
+  isEditing,
+  isPending,
+  errorMessage,
+  onToggleSelect,
+  onStartEdit,
+  onCancelEdit,
+  onSave,
+}: {
+  row: AssortmentRow;
+  farms: FarmOption[];
+  isSelected: boolean;
+  isEditing: boolean;
+  isPending: boolean;
+  errorMessage: string | null;
+  onToggleSelect: (checked: boolean) => void;
+  onStartEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (formData: FormData) => void;
+}) {
+  const [farmId, setFarmId] = useState(row.farmId);
+  const [supplierCode, setSupplierCode] = useState(row.supplierCode ?? "");
+  const [variety, setVariety] = useState(row.variety ?? "");
+  const [stemLength, setStemLength] = useState(() => initialStemLengthFor(row));
+  const [boxType, setBoxType] = useState(row.boxType);
+  const [stemsPerBox, setStemsPerBox] = useState(String(row.stemsPerBox));
+  const [weightPerBoxKg, setWeightPerBoxKg] = useState(row.weightPerBoxKg);
+  const [notes, setNotes] = useState(row.notes ?? "");
+
+  // Section 6: Cancel must restore the original/current values - reset every
+  // field back to the row's current props whenever edit mode (re)opens, so a
+  // previous, cancelled edit never leaks into the next time this row is
+  // opened for editing.
+  useEffect(() => {
+    if (!isEditing) return;
+    setFarmId(row.farmId);
+    setSupplierCode(row.supplierCode ?? "");
+    setVariety(row.variety ?? "");
+    setStemLength(initialStemLengthFor(row));
+    setBoxType(row.boxType);
+    setStemsPerBox(String(row.stemsPerBox));
+    setWeightPerBoxKg(row.weightPerBoxKg);
+    setNotes(row.notes ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEditing]);
+
+  function handleSave() {
+    const formData = new FormData();
+    formData.set("farmId", farmId);
+    formData.set("supplierCode", supplierCode);
+    formData.set("variety", variety);
+    formData.set("stemLength", stemLength);
+    formData.set("boxType", boxType);
+    formData.set("stemsPerBox", stemsPerBox);
+    formData.set("weightPerBoxKg", weightPerBoxKg);
+    formData.set("notes", notes);
+    onSave(formData);
+  }
+
+  const checkboxCell = (
+    <td>
+      <input
+        type="checkbox"
+        aria-label={`Selecteer ${row.farmName} ${row.productName}`}
+        checked={isSelected}
+        onChange={(e) => onToggleSelect(e.target.checked)}
+      />
+    </td>
+  );
+
+  if (!isEditing) {
+    return (
+      <tr className={isSelected ? "bg-brand-50/50" : ""}>
+        {checkboxCell}
+        <td className="font-medium">
+          {row.farmName}
+          {row.supplierCode && <span className="ml-1 text-xs text-gray-400">({row.supplierCode})</span>}
+        </td>
+        <td>
+          {row.productName}
+          {(row.color || row.grade) && (
+            <span className="text-xs text-gray-400"> {[row.color, row.grade].filter(Boolean).join(" ")}</span>
+          )}
+        </td>
+        <td>{row.variety ?? "-"}</td>
+        <td>{row.stemLength ?? "-"}</td>
+        <td>
+          {row.boxType} <span className="text-xs text-gray-400">({row.stemsPerBox} st)</span>
+        </td>
+        <td>{fmtMoney(row.weightPerBoxKg, 3)} kg</td>
+        <td className="max-w-48 truncate" title={row.notes ?? ""}>
+          {row.notes ?? "-"}
+        </td>
+        <td className="whitespace-nowrap">
+          <button type="button" className="text-xs text-brand-600 hover:underline mr-2" onClick={onStartEdit}>
+            Bewerken
+          </button>
+          {/* Secondary row actions collapsed behind a compact "..." menu (Task 3B). */}
+          <details className="inline-block group">
+            <summary className="text-xs text-gray-500 hover:text-gray-700 cursor-pointer inline list-none w-5 text-center">
+              <span aria-hidden>⋯</span>
+              <span className="sr-only">
+                Meer acties voor {row.farmName} {row.productName}
+              </span>
+            </summary>
+            <div className="mt-2 bg-gray-50 p-2 rounded space-y-2 max-w-xs">
+              <form action={duplicateSupplierLink.bind(null, row.id)} className="flex gap-2 items-end">
+                <div>
+                  <label className="label">Naar leverancier</label>
+                  <select name="farmId" className="input py-1 text-xs" defaultValue="">
+                    <option value="" disabled>
+                      Kies leverancier...
+                    </option>
+                    {farms.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <button className="btn-secondary py-1 px-2 text-xs whitespace-nowrap">Dupliceren</button>
+              </form>
+              <form action={deleteSupplierLink.bind(null, row.id)}>
+                <button
+                  className="text-xs text-red-600 hover:underline"
+                  onClick={(e) => {
+                    if (
+                      !window.confirm(
+                        `Weet je zeker dat je "${row.productName} ${row.variety ?? ""}" van ${row.farmName} wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`,
+                      )
+                    )
+                      e.preventDefault();
+                  }}
+                >
+                  Verwijderen
+                </button>
+              </form>
+            </div>
+          </details>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr className="bg-brand-50/40 align-top">
+      {checkboxCell}
+      <td>
+        <select value={farmId} onChange={(e) => setFarmId(e.target.value)} className="input py-1 text-xs w-24">
+          {farms.map((f) => (
+            <option key={f.id} value={f.id}>
+              {f.name}
+            </option>
+          ))}
+        </select>
+        <input
+          value={supplierCode}
+          onChange={(e) => setSupplierCode(e.target.value)}
+          placeholder="Code"
+          className="input py-1 text-xs w-24 mt-1"
+        />
+      </td>
+      <td className="text-xs text-gray-500 pt-2">{row.productName}</td>
+      <td>
+        <input
+          value={variety}
+          onChange={(e) => setVariety(e.target.value)}
+          required
+          className="input py-1 text-xs w-40"
+        />
+      </td>
+      <td>
+        <input
+          type="number"
+          min={1}
+          step={1}
+          value={stemLength}
+          onChange={(e) => setStemLength(e.target.value)}
+          required
+          className="input py-1 text-xs w-16"
+        />
+      </td>
+      <td>
+        <input
+          value={boxType}
+          onChange={(e) => setBoxType(e.target.value)}
+          placeholder="QB"
+          className="input py-1 text-xs w-14"
+        />
+        <input
+          type="number"
+          value={stemsPerBox}
+          onChange={(e) => setStemsPerBox(e.target.value)}
+          required
+          placeholder="st"
+          className="input py-1 text-xs w-14 mt-1"
+        />
+      </td>
+      <td>
+        <input
+          type="number"
+          step="0.001"
+          value={weightPerBoxKg}
+          onChange={(e) => setWeightPerBoxKg(e.target.value)}
+          required
+          className="input py-1 text-xs w-20"
+        />
+      </td>
+      <td>
+        <input value={notes} onChange={(e) => setNotes(e.target.value)} className="input py-1 text-xs w-32" />
+      </td>
+      <td className="whitespace-nowrap">
+        <div className="flex gap-2">
+          <button type="button" className="btn-primary py-1 px-2 text-xs" disabled={isPending} onClick={handleSave}>
+            {isPending ? "Bezig..." : "Opslaan"}
+          </button>
+          <button type="button" className="text-xs text-gray-500 hover:underline" disabled={isPending} onClick={onCancelEdit}>
+            Annuleren
+          </button>
+        </div>
+        {errorMessage && <p className="text-xs text-red-600 mt-1 max-w-[11rem]">{errorMessage}</p>}
+      </td>
+    </tr>
   );
 }
 

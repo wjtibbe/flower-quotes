@@ -181,4 +181,36 @@ describe("updateSupplierLink - variety/length editing (Part B)", () => {
     const result = await updateSupplierLink("gone", formData(BASE_FIELDS));
     expect(result.ok).toBe(false);
   });
+
+  it("12: cleans up a legacy row - variety 'Shiny Copper Premium 18cm' + empty length becomes variety 'Shiny Copper Premium' + length 18 in one edit", async () => {
+    mockProfileFindUnique.mockResolvedValue({
+      ...EXISTING_PROFILE,
+      productVariant: {
+        ...EXISTING_PROFILE.productVariant,
+        variety: "Shiny Copper Premium 18cm",
+        stemLength: null,
+      },
+    });
+    mockVariantFindFirst.mockResolvedValue(null);
+    mockVariantCreate.mockResolvedValue({ id: "variant-shiny-copper-premium-18" });
+
+    const result = await updateSupplierLink(
+      "profile-1",
+      formData({ ...BASE_FIELDS, variety: "Shiny Copper Premium", stemLength: "18" }),
+    );
+
+    expect(result.ok).toBe(true);
+    expect(mockVariantCreate).toHaveBeenCalledWith({
+      data: {
+        productId: "product-rosa",
+        variety: "Shiny Copper Premium",
+        stemLength: "18",
+        color: null,
+        grade: null,
+        treatment: null,
+      },
+    });
+    const updateCall = mockProfileUpdate.mock.calls[0][0];
+    expect(updateCall.data.productVariantId).toBe("variant-shiny-copper-premium-18");
+  });
 });
