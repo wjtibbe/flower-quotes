@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockFarmOfferFindUnique = vi.fn();
 const mockOriginFindUnique = vi.fn();
+const mockOriginFindFirst = vi.fn();
+const mockOriginCreate = vi.fn();
 const mockDestinationFindUnique = vi.fn();
 const mockRouteFindMany = vi.fn();
 const mockFreightRateFindFirst = vi.fn();
@@ -20,7 +22,11 @@ vi.mock("server-only", () => ({}));
 vi.mock("@/lib/db", () => ({
   prisma: {
     farmOffer: { findUnique: (...a: unknown[]) => mockFarmOfferFindUnique(...a) },
-    origin: { findUnique: (...a: unknown[]) => mockOriginFindUnique(...a) },
+    origin: {
+      findUnique: (...a: unknown[]) => mockOriginFindUnique(...a),
+      findFirst: (...a: unknown[]) => mockOriginFindFirst(...a),
+      create: (...a: unknown[]) => mockOriginCreate(...a),
+    },
     destination: { findUnique: (...a: unknown[]) => mockDestinationFindUnique(...a) },
     route: { findMany: (...a: unknown[]) => mockRouteFindMany(...a) },
     freightRate: { findFirst: (...a: unknown[]) => mockFreightRateFindFirst(...a) },
@@ -68,6 +74,16 @@ beforeEach(() => {
   mockOriginFindUnique.mockImplementation(({ where: { id } }) =>
     Promise.resolve(id === BOGOTA_ORIGIN_ID ? { city: "Bogotá" } : id === QUITO_ORIGIN_ID ? { city: "Quito" } : null),
   );
+  // Represents the two EXISTING Origin rows the country-default resolver
+  // must reuse (never create) - keyed on the same city+country match the
+  // real Prisma query uses.
+  mockOriginFindFirst.mockImplementation(({ where }) => {
+    const city = (where.city?.equals ?? "").toLowerCase();
+    const country = (where.country?.equals ?? "").toLowerCase();
+    if (city === "bogotá" && country === "colombia") return Promise.resolve({ id: BOGOTA_ORIGIN_ID });
+    if (city === "quito" && country === "ecuador") return Promise.resolve({ id: QUITO_ORIGIN_ID });
+    return Promise.resolve(null);
+  });
   mockDestinationFindUnique.mockImplementation(({ where: { id } }) =>
     Promise.resolve(id === AMSTERDAM_DEST_ID ? { city: "Amsterdam" } : id === DUBAI_DEST_ID ? { city: "Dubai" } : null),
   );
@@ -151,6 +167,117 @@ describe("resolvePricingContext - route selection", () => {
     expect(mockRouteFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: { originId: BOGOTA_ORIGIN_ID, destinationId: DUBAI_DEST_ID } }),
     );
+  });
+});
+
+// Interim business rule: a Farm's country alone picks a default departure
+// among the EXISTING Quito/Bogotá Origin rows until suppliers can configure
+// their own (see defaultDeparture.ts, the single central place the mapping
+// lives). These tests exercise that fallback specifically - i.e. no
+// per-line originId AND no Farm.originId at all.
+describe("resolvePricingContext - country-based default departure (interim rule)", () => {
+  it("6: Mystic Flowers (Ecuador) + an Amsterdam customer resolves Quito -> Amsterdam", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Mystic Flowers", originId: null, country: "Ecuador" } });
+    mockRouteFindMany.mockResolvedValue([
+      { id: QUITO_ROUTE_ID, originId: QUITO_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
+    ]);
+    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    const ctx = await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
+
+    expect(ctx.originId).toBe(QUITO_ORIGIN_ID);
+    expect(ctx.originLabel).toBe("Quito");
+    expect(ctx.routeId).toBe(QUITO_ROUTE_ID);
+    expect(ctx.originUnresolvedReason).toBeNull();
+  });
+
+  it("7: a Colombian supplier + an Amsterdam customer resolves Bogotá -> Amsterdam", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "La Gaitana Farms", originId: null, country: "Colombia" } });
+    mockRouteFindMany.mockResolvedValue([
+      { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
+    ]);
+    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "2.9" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    const ctx = await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
+
+    expect(ctx.originId).toBe(BOGOTA_ORIGIN_ID);
+    expect(ctx.originLabel).toBe("Bogotá");
+    expect(ctx.routeId).toBe(BOGOTA_ROUTE_ID);
+  });
+
+  it("8: the route lookup uses the resolved Origin's id, never the country/city text", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Mystic Flowers", originId: null, country: "Ecuador" } });
+    mockRouteFindMany.mockResolvedValue([]);
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
+
+    const routeQueryWhere = mockRouteFindMany.mock.calls[0][0].where;
+    expect(routeQueryWhere).toEqual({ originId: QUITO_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID });
+    // Never "Quito"/"Ecuador" strings reaching the route query.
+    expect(Object.values(routeQueryWhere)).not.toContain("Quito");
+    expect(Object.values(routeQueryWhere)).not.toContain("Ecuador");
+  });
+
+  it("9: the existing Quito/Bogotá Origin rows are reused - looked up by city+country, not recreated", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Mystic Flowers", originId: null, country: "Ecuador" } });
+    mockRouteFindMany.mockResolvedValue([]);
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
+
+    expect(mockOriginFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          city: { equals: "Quito", mode: "insensitive" },
+          country: { equals: "Ecuador", mode: "insensitive" },
+        },
+      }),
+    );
+  });
+
+  it("10: no duplicate Origin row is ever created by the default-departure fallback", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Mystic Flowers", originId: null, country: "Ecuador" } });
+    mockRouteFindMany.mockResolvedValue([]);
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
+
+    expect(mockOriginCreate).not.toHaveBeenCalled();
+  });
+
+  it("11: multiple quote lines from different-country farms independently resolve their own departure", async () => {
+    mockRouteFindMany.mockImplementation(({ where }) =>
+      Promise.resolve(
+        where.originId === QUITO_ORIGIN_ID
+          ? [{ id: QUITO_ROUTE_ID, originId: QUITO_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true }]
+          : where.originId === BOGOTA_ORIGIN_ID
+            ? [{ id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true }]
+            : [],
+      ),
+    );
+    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    mockFarmOfferFindUnique.mockResolvedValueOnce({ farm: { name: "Mystic Flowers", originId: null, country: "Ecuador" } });
+    const ecuadorCtx = await resolvePricingContext(
+      farmOfferLine({ id: "line-ec", farmOfferId: "offer-ec", originId: null }),
+      customer({ destinationId: AMSTERDAM_DEST_ID }),
+      "DDP",
+    );
+
+    mockFarmOfferFindUnique.mockResolvedValueOnce({ farm: { name: "La Gaitana Farms", originId: null, country: "Colombia" } });
+    const colombiaCtx = await resolvePricingContext(
+      farmOfferLine({ id: "line-co", farmOfferId: "offer-co", originId: null }),
+      customer({ destinationId: AMSTERDAM_DEST_ID }),
+      "DDP",
+    );
+
+    expect(ecuadorCtx.routeId).toBe(QUITO_ROUTE_ID);
+    expect(colombiaCtx.routeId).toBe(BOGOTA_ROUTE_ID);
+    expect(ecuadorCtx.routeId).not.toBe(colombiaCtx.routeId);
   });
 });
 
@@ -284,8 +411,8 @@ describe("priceLineForCustomer - actionable route-specific errors", () => {
     expect(issue?.message).toBe("Geen Handling-kosten gevonden voor Bogotá → Amsterdam");
   });
 
-  it("a supplier with no origin configured at all collapses the 3 generic blockers into one actionable message", async () => {
-    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Coloriginz Supplier", originId: null } });
+  it("5: a supplier with no origin AND an unsupported country collapses the 3 generic blockers into one clear business error", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Coloriginz Supplier", originId: null, country: "Kenya" } });
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     const result = await priceLineForCustomer(
@@ -300,10 +427,29 @@ describe("priceLineForCustomer - actionable route-specific errors", () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toEqual({
       code: "ORIGIN_NOT_CONFIGURED",
-      message: 'Vertreklocatie is niet ingesteld voor leverancier "Coloriginz Supplier"',
+      message: "Geen standaard vertreklocatie ingesteld voor leverancier Coloriginz Supplier uit Kenya",
     });
-    // The route lookup must never even run - there is no origin to search from.
+    // The route lookup must never even run - there is no origin to search from,
+    // and an unsupported country is never guessed at.
     expect(mockRouteFindMany).not.toHaveBeenCalled();
+  });
+
+  it("a supplier with no origin AND no country at all still gets a clear message (no dangling 'uit ')", async () => {
+    mockFarmOfferFindUnique.mockResolvedValue({ farm: { name: "Mystery Farm", originId: null, country: null } });
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+
+    const result = await priceLineForCustomer(
+      farmOfferLine({ originId: null }),
+      customer(),
+      "DDP",
+      "USD",
+      "15",
+      { stemsPerBox: 20, weightPerBoxKg: "8" },
+    );
+
+    expect(result.issues).toEqual([
+      { code: "ORIGIN_NOT_CONFIGURED", message: "Geen standaard vertreklocatie ingesteld voor leverancier Mystery Farm" },
+    ]);
   });
 
   it("12/13: a fully-resolved route prices freight (per kg) and handling (per box) correctly", async () => {

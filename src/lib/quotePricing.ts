@@ -14,17 +14,19 @@ import {
 } from "@/lib/pricing";
 import { BASE_CURRENCY, displayRate } from "@/lib/exchangeRate";
 import type { FarmOfferLine, Customer, FreightRateUnit } from "@prisma/client";
+import { defaultDepartureLocationForCountry } from "@/lib/quotes/defaultDeparture";
 
 export interface ResolvedPricingContext {
   originId: string | null;
   originLabel: string | null; // e.g. "Bogotá" - for diagnostics/messages only, never business logic
   destinationId: string | null;
   destinationLabel: string | null; // e.g. "Amsterdam"
-  // The farm's own name, only when its origin could not be resolved at all
-  // (originId stayed null) - lets a message point at the real fix ("this
-  // supplier has no departure location configured") instead of the generic
-  // "no tariff found" blockers, which would otherwise all fire together.
-  farmNameIfOriginMissing: string | null;
+  // Set only when NO departure location could be resolved at all - no
+  // per-line override, no Farm.originId, and the Farm's country doesn't map
+  // to a currently supported default departure (Ecuador/Colombia) - already
+  // a complete, human-readable reason, so callers don't need to re-derive it
+  // from the farm's name/country themselves.
+  originUnresolvedReason: string | null;
   routeId: string | null;
   routeSupportsIncoterm: boolean; // false if the route exists but doesn't offer this incoterm
   freightRatePerKg: string | null; // rate amount (legacy name; unit below)
@@ -74,18 +76,41 @@ export async function resolvePricingContext(
   // fall back to the supplier's configured origin, so uploaded offers can be
   // priced C&F/DDP without manually setting an origin per line.
   let originId = line.originId;
-  let farmNameIfOriginMissing: string | null = null;
+  let originUnresolvedReason: string | null = null;
   if (!originId) {
     const offer = await prisma.farmOffer.findUnique({
       where: { id: line.farmOfferId },
-      select: { farm: { select: { name: true, originId: true } } },
+      select: { farm: { select: { name: true, originId: true, country: true } } },
     });
     originId = offer?.farm?.originId ?? null;
-    // Still null after the fallback: the supplier itself has no departure
-    // location configured - this is what actually needs fixing, and it's
-    // what makes freight AND every DDP cost look "missing" at once (route
-    // resolution below never even runs), so it's worth naming explicitly.
-    if (!originId) farmNameIfOriginMissing = offer?.farm?.name ?? null;
+
+    if (!originId) {
+      // No explicit origin on the Farm either - fall back to the interim
+      // country -> default departure rule (Ecuador -> Quito, Colombia ->
+      // Bogotá; see defaultDeparture.ts, the single central place this
+      // mapping lives). Resolves an EXISTING Origin row only - never
+      // creates one - so a route search still filters by a real Origin id,
+      // not a guess.
+      const farmName = offer?.farm?.name ?? null;
+      const farmCountry = offer?.farm?.country ?? null;
+      const defaultDeparture = defaultDepartureLocationForCountry(farmCountry);
+      if (defaultDeparture) {
+        const origin = await prisma.origin.findFirst({
+          where: {
+            city: { equals: defaultDeparture.city, mode: "insensitive" },
+            country: { equals: defaultDeparture.country, mode: "insensitive" },
+          },
+          select: { id: true },
+        });
+        originId = origin?.id ?? null;
+      }
+
+      if (!originId) {
+        originUnresolvedReason = farmCountry
+          ? `Geen standaard vertreklocatie ingesteld voor leverancier ${farmName ?? "onbekend"} uit ${farmCountry}`
+          : `Geen standaard vertreklocatie ingesteld voor leverancier ${farmName ?? "onbekend"}`;
+      }
+    }
   }
   const originLabel = originId
     ? (await prisma.origin.findUnique({ where: { id: originId }, select: { city: true } }))?.city ?? null
@@ -174,7 +199,7 @@ export async function resolvePricingContext(
     originLabel,
     destinationId,
     destinationLabel,
-    farmNameIfOriginMissing,
+    originUnresolvedReason,
     routeId,
     routeSupportsIncoterm,
     freightRatePerKg,
@@ -337,17 +362,11 @@ function formatPricingDate(d: Date): string {
  * fixable problem instead.
  */
 function enrichRouteIssues(issues: ValidationIssue[], context: ResolvedPricingContext): ValidationIssue[] {
-  if (context.farmNameIfOriginMissing) {
+  if (context.originUnresolvedReason) {
     const routeIssues = issues.filter((i) => ROUTE_AWARE_CODES.has(i.code));
     if (routeIssues.length > 0) {
       const rest = issues.filter((i) => !ROUTE_AWARE_CODES.has(i.code));
-      return [
-        ...rest,
-        {
-          code: "ORIGIN_NOT_CONFIGURED",
-          message: `Vertreklocatie is niet ingesteld voor leverancier "${context.farmNameIfOriginMissing}"`,
-        },
-      ];
+      return [...rest, { code: "ORIGIN_NOT_CONFIGURED", message: context.originUnresolvedReason }];
     }
   }
 
