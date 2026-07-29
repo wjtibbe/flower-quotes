@@ -113,7 +113,12 @@ export type BlockerCode =
   | "MISSING_MARGIN"
   | "NEGATIVE_PRICE"
   | "NEGATIVE_WEIGHT"
-  | "DIVISION_BY_ZERO";
+  | "DIVISION_BY_ZERO"
+  // The supplier/farm has no origin location configured at all - the real,
+  // actionable problem, distinct from (and reported instead of) the three
+  // generic freight/DDP blockers that would otherwise all fire together
+  // (see quotePricing.ts's route-context enrichment).
+  | "ORIGIN_NOT_CONFIGURED";
 
 export interface ValidationIssue {
   code: BlockerCode;
@@ -127,7 +132,12 @@ export type WarningCode =
   | "STALE_RATE"
   | "MANUAL_PRICE_OVERRIDE"
   | "UNUSUAL_WEIGHT"
-  | "UNUSUAL_SELL_PRICE";
+  | "UNUSUAL_SELL_PRICE"
+  // More than one currently-active, distinct-named additional cost shares a
+  // CostCategory on this route (e.g. a combined "Clearing & inspection" row
+  // configured alongside separate "Clearing"/"Inspection" rows) - each is
+  // summed independently by category, so this can silently double-count.
+  | "DUPLICATE_COST_CATEGORY";
 
 export interface QuoteWarning {
   code: WarningCode;

@@ -16,7 +16,14 @@ import type { FarmOfferLine, Customer, FreightRateUnit } from "@prisma/client";
 
 export interface ResolvedPricingContext {
   originId: string | null;
+  originLabel: string | null; // e.g. "Bogotá" - for diagnostics/messages only, never business logic
   destinationId: string | null;
+  destinationLabel: string | null; // e.g. "Amsterdam"
+  // The farm's own name, only when its origin could not be resolved at all
+  // (originId stayed null) - lets a message point at the real fix ("this
+  // supplier has no departure location configured") instead of the generic
+  // "no tariff found" blockers, which would otherwise all fire together.
+  farmNameIfOriginMissing: string | null;
   routeId: string | null;
   routeSupportsIncoterm: boolean; // false if the route exists but doesn't offer this incoterm
   freightRatePerKg: string | null; // rate amount (legacy name; unit below)
@@ -26,6 +33,10 @@ export interface ResolvedPricingContext {
   exchangeRate: ExchangeRateSnapshot | null;
   exchangeRateIsManual: boolean; // true when a per-quote override rate was used
   exchangeRateDefault: string | null; // the standard rate that would have applied (for transparency)
+  // The single "now" used for every effective-date check below (freight
+  // rate, additional costs) - exposed so an error message can state exactly
+  // which date found nothing active.
+  pricingDate: Date;
 }
 
 /**
@@ -53,18 +64,36 @@ export async function resolvePricingContext(
   destinationIdOverride?: string | null,
   exchangeRateOverride?: string | null,
 ): Promise<ResolvedPricingContext> {
+  // Single "now" for every effective-date check in this call, so the freight
+  // rate and the additional costs are evaluated as of the exact same instant
+  // (and that instant can be stated precisely in an error message).
+  const now = new Date();
+
   // Compatibility fallback: parsed lines usually have no explicit originId -
   // fall back to the supplier's configured origin, so uploaded offers can be
   // priced C&F/DDP without manually setting an origin per line.
   let originId = line.originId;
+  let farmNameIfOriginMissing: string | null = null;
   if (!originId) {
     const offer = await prisma.farmOffer.findUnique({
       where: { id: line.farmOfferId },
-      select: { farm: { select: { originId: true } } },
+      select: { farm: { select: { name: true, originId: true } } },
     });
     originId = offer?.farm?.originId ?? null;
+    // Still null after the fallback: the supplier itself has no departure
+    // location configured - this is what actually needs fixing, and it's
+    // what makes freight AND every DDP cost look "missing" at once (route
+    // resolution below never even runs), so it's worth naming explicitly.
+    if (!originId) farmNameIfOriginMissing = offer?.farm?.name ?? null;
   }
+  const originLabel = originId
+    ? (await prisma.origin.findUnique({ where: { id: originId }, select: { city: true } }))?.city ?? null
+    : null;
+
   const destinationId = destinationIdOverride !== undefined ? destinationIdOverride : customer.destinationId;
+  const destinationLabel = destinationId
+    ? (await prisma.destination.findUnique({ where: { id: destinationId }, select: { city: true } }))?.city ?? null
+    : null;
 
   let routeId: string | null = null;
   let routeSupportsIncoterm = true;
@@ -90,7 +119,6 @@ export async function resolvePricingContext(
         // The applicable rate: already effective, not yet expired;
         // the most recently effective one wins. A future-dated rate is not
         // used until its effectiveFrom passes.
-        const now = new Date();
         const rate = await prisma.freightRate.findFirst({
           where: {
             routeId: route.id,
@@ -107,7 +135,7 @@ export async function resolvePricingContext(
       }
 
       if (incoterm === "DDP") {
-        additionalCosts = await resolveAdditionalCosts(route.id);
+        additionalCosts = await resolveAdditionalCosts(route.id, now);
       }
     }
   }
@@ -138,7 +166,10 @@ export async function resolvePricingContext(
 
   return {
     originId,
+    originLabel,
     destinationId,
+    destinationLabel,
+    farmNameIfOriginMissing,
     routeId,
     routeSupportsIncoterm,
     freightRatePerKg,
@@ -148,6 +179,7 @@ export async function resolvePricingContext(
     exchangeRate,
     exchangeRateIsManual,
     exchangeRateDefault,
+    pricingDate: now,
   };
 }
 
@@ -159,8 +191,7 @@ export async function resolvePricingContext(
  * without category/rateUnit (only costType) is skipped by the new UI path but
  * still resolvable via its backfilled fields.
  */
-async function resolveAdditionalCosts(routeId: string): Promise<AdditionalCostInput[]> {
-  const now = new Date();
+async function resolveAdditionalCosts(routeId: string, now: Date): Promise<AdditionalCostInput[]> {
   const rows = await prisma.ddpCostRate.findMany({
     where: {
       routeId,
@@ -284,8 +315,71 @@ export async function priceLineForCustomer(
 
   const issues = validatePriceLineInput(input);
   if (issues.length > 0) {
-    return { issues, breakdown: null, context };
+    return { issues: enrichRouteIssues(issues, context), breakdown: null, context };
   }
 
   return { issues: [], breakdown: calculatePriceLine(input), context };
+}
+
+/** Codes whose generic message becomes actionable once route context is known. */
+const ROUTE_AWARE_CODES = new Set<ValidationIssue["code"]>([
+  "MISSING_FREIGHT_RATE",
+  "MISSING_DDP_CLEARING_INSPECTION",
+  "MISSING_DDP_HANDLING",
+]);
+
+/** dd-mm-yyyy, zero-padded - locale-independent so the format never drifts with the server's ICU data. */
+function formatPricingDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
+}
+
+/**
+ * Rewrites the generic freight/DDP blockers into messages that name the
+ * actual route and date, instead of a bare "Vrachttarief ontbreekt" that
+ * gives no clue whether the problem is the wrong route, an expired tariff,
+ * or nothing configured at all (never a database id - see section 5 of the
+ * route-pricing fix this was added for).
+ *
+ * When the supplier has no origin configured at all, `resolvePricingContext`
+ * never even attempts a route lookup, so freight AND both DDP costs would
+ * otherwise all report "missing" together with no indication why - that
+ * specific, common case is collapsed into ONE issue that names the real,
+ * fixable problem instead.
+ */
+function enrichRouteIssues(issues: ValidationIssue[], context: ResolvedPricingContext): ValidationIssue[] {
+  if (context.farmNameIfOriginMissing) {
+    const routeIssues = issues.filter((i) => ROUTE_AWARE_CODES.has(i.code));
+    if (routeIssues.length > 0) {
+      const rest = issues.filter((i) => !ROUTE_AWARE_CODES.has(i.code));
+      return [
+        ...rest,
+        {
+          code: "ORIGIN_NOT_CONFIGURED",
+          message: `Vertreklocatie is niet ingesteld voor leverancier "${context.farmNameIfOriginMissing}"`,
+        },
+      ];
+    }
+  }
+
+  const origin = context.originLabel ?? "onbekende herkomst";
+  const destination = context.destinationLabel ?? "onbekende bestemming";
+  const route = `${origin} → ${destination}`;
+  const date = formatPricingDate(context.pricingDate);
+
+  // No trailing period - callers (createQuotes) join these into one sentence
+  // and append their own final period, matching the existing blocker-message
+  // convention in validation.ts.
+  return issues.map((issue) => {
+    if (issue.code === "MISSING_FREIGHT_RATE") {
+      return { ...issue, message: `Geen actief vrachttarief gevonden voor ${route} op ${date}` };
+    }
+    if (issue.code === "MISSING_DDP_CLEARING_INSPECTION") {
+      return { ...issue, message: `Geen Clearing/Inspection-kosten gevonden voor ${route}` };
+    }
+    if (issue.code === "MISSING_DDP_HANDLING") {
+      return { ...issue, message: `Geen Handling-kosten gevonden voor ${route}` };
+    }
+    return issue;
+  });
 }

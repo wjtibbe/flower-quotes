@@ -6,6 +6,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { priceLineForCustomer } from "@/lib/quotePricing";
+import { detectDuplicateCostCategories } from "@/lib/pricing";
 import { generateQuoteNumber } from "@/lib/quoteNumber";
 import type { Incoterm, CurrencyCode } from "@/lib/pricing";
 import { QuoteStatus, QuoteExportType } from "@prisma/client";
@@ -290,6 +291,17 @@ export async function createQuotes(formData: FormData): Promise<void> {
             calculatedSellPricePerStem: breakdown.calculatedSellPricePerStemRounded.toString(),
             // Exact resolved quantity - never a silent "1 box" default (section 3).
             quantityBoxes: line.__resolved.quantityBoxes,
+            // Flags (never blocks) a route whose additional costs have more
+            // than one active row sharing a CostCategory - e.g. a combined
+            // "Clearing & inspection" row configured alongside separate
+            // "Clearing"/"Inspection" rows, which are summed independently
+            // and so can silently double-count. Reported, never guessed at
+            // or auto-merged - the route's own cost configuration is what
+            // needs a human look.
+            warnings: (() => {
+              const w = detectDuplicateCostCategories(breakdown.additionalCosts);
+              return w.length ? (w as never) : undefined;
+            })(),
           })),
         },
       },
