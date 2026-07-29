@@ -40,6 +40,25 @@ function describeLineForError(line: { varietyRaw: string | null; productGroupRaw
 }
 
 /**
+ * Sends the user back to the wizard with a clear, visible message instead of
+ * throwing. A bare `throw` here has no error boundary to land in (none
+ * exists for this route), so in production it surfaced as the generic
+ * "Application error: a server-side exception has occurred" crash page -
+ * exactly what a real business-state problem (no lines selected, an
+ * offer/line that's no longer quotable, nothing priced) must never do. This
+ * mirrors the `redirect(...&err=...)` + `searchParams.err` pattern already
+ * used by `deleteCustomer`/`deleteFarm` elsewhere in this codebase. The
+ * previously requested lineIds are preserved in the query string so the
+ * user's selection isn't lost.
+ */
+function redirectToWizardWithError(lineIds: string[], message: string): never {
+  const params = new URLSearchParams();
+  for (const id of lineIds) params.append("lineIds", id);
+  params.set("err", message);
+  redirect(`/quotes/new?${params.toString()}`);
+}
+
+/**
  * Re-reads every requested FarmOfferLine fresh from the database and
  * re-validates it server-side - the server action is leading, a
  * manipulated client can never smuggle in a DRAFT offer's line or an
@@ -133,7 +152,7 @@ async function loadAndValidateQuotableLines(lineIds: string[]) {
 
   if (errors.length > 0) {
     const uniqueErrors = [...new Set(errors)].slice(0, 5);
-    throw new Error(`Kan geen offerte maken - ${uniqueErrors.join("; ")}.`);
+    redirectToWizardWithError(lineIds, `Kan geen offerte maken - ${uniqueErrors.join("; ")}.`);
   }
 
   return resolved;
@@ -146,8 +165,8 @@ export async function createQuotes(formData: FormData): Promise<void> {
   const lineIds = [...new Set(formData.getAll("lineIds").map(String))];
   const customerIds = [...new Set(formData.getAll("customerIds").map(String))];
 
-  if (lineIds.length === 0) throw new Error("Geen productregels geselecteerd");
-  if (customerIds.length === 0) throw new Error("Geen klanten geselecteerd");
+  if (lineIds.length === 0) redirectToWizardWithError(lineIds, "Geen productregels geselecteerd");
+  if (customerIds.length === 0) redirectToWizardWithError(lineIds, "Geen klanten geselecteerd");
 
   // Gating + quantity/packaging resolution happens once, up front, for the
   // whole batch - before any customer loop and before any write - so an
@@ -285,7 +304,7 @@ export async function createQuotes(formData: FormData): Promise<void> {
       uniqueReasons.length > 0
         ? uniqueReasons.join("; ")
         : "controleer of FOB-prijs, gewicht, vrachttarief en wisselkoers aanwezig zijn";
-    throw new Error(`Geen offerteregels konden worden berekend - ${detail}.`);
+    redirectToWizardWithError(lineIds, `Geen offerteregels konden worden berekend - ${detail}.`);
   }
 
   if (createdQuoteIds.length === 1) {

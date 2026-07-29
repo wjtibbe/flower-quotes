@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtMoney } from "@/lib/format";
 import { variantLabel } from "@/lib/variantLabel";
@@ -11,7 +12,7 @@ export const dynamic = "force-dynamic";
 export default async function NewQuotePage({
   searchParams,
 }: {
-  searchParams: { lineIds?: string | string[] };
+  searchParams: { lineIds?: string | string[]; err?: string };
 }) {
   const lineIds = (
     Array.isArray(searchParams.lineIds) ? searchParams.lineIds : searchParams.lineIds ? [searchParams.lineIds] : []
@@ -93,6 +94,8 @@ export default async function NewQuotePage({
     return v !== 0 ? (1 / v).toFixed(6) : v.toString();
   }
 
+  const err = searchParams.err;
+
   return (
     <div className="space-y-6">
       <div>
@@ -104,6 +107,18 @@ export default async function NewQuotePage({
         </p>
       </div>
 
+      {err && <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{err}</div>}
+
+      {lines.length === 0 ? (
+        <div className="card p-6 text-center space-y-3">
+          <p className="text-sm text-gray-500">
+            Er zijn momenteel geen gereviewde leveranciersaanbiedingen beschikbaar om een offerte van te maken.
+          </p>
+          <Link href="/farm-offers" className="btn-secondary inline-block">
+            Naar leveranciersaanbiedingen
+          </Link>
+        </div>
+      ) : (
       <form action={createQuotes} className="space-y-6">
         <div className="card overflow-x-auto">
           <div className="px-4 pt-4">
@@ -270,6 +285,7 @@ export default async function NewQuotePage({
         </button>
         </div>
       </form>
+      )}
     </div>
   );
 }

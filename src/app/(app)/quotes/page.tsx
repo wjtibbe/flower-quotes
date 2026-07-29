@@ -37,9 +37,14 @@ export default async function QuotesPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold text-gray-900">Offertehistorie</h1>
-        <p className="text-sm text-gray-500 mt-1">Alle offertes, doorzoekbaar op klant, bestemming en status.</p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold text-gray-900">Offertehistorie</h1>
+          <p className="text-sm text-gray-500 mt-1">Alle offertes, doorzoekbaar op klant, bestemming en status.</p>
+        </div>
+        <Link href="/quotes/new" className="btn-primary whitespace-nowrap">
+          Offerte aanmaken
+        </Link>
       </div>
 
       {justCreatedIds.length > 1 && (

@@ -7,7 +7,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-auth", () => ({ getServerSession: () => Promise.resolve({ user: { id: "user-1" } }) }));
 vi.mock("@/lib/auth", () => ({ authOptions: {} }));
-vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
+// Real Next.js `redirect()` always throws a control-flow exception to stop
+// execution - this mock replicates that (instead of being a no-op) so the
+// business-state validation paths in `actions.ts`, which now redirect back
+// to the wizard with a `?err=` message instead of throwing a raw Error, are
+// exercised the same way they run in production.
+const mockRedirect = vi.fn((url: string) => {
+  throw new Error(`REDIRECT:${url}`);
+});
+vi.mock("next/navigation", () => ({ redirect: (url: string) => mockRedirect(url) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/quoteNumber", () => ({ generateQuoteNumber: () => Promise.resolve("Q-20260723-0001") }));
 
@@ -101,11 +109,22 @@ beforeEach(() => {
   mockQuoteCreate.mockResolvedValue({ id: "quote-1" });
 });
 
+/**
+ * On success `createQuotes` ends with `redirect(...)` too (to the new
+ * quote, or back to the list) - real Next.js `redirect()` always throws a
+ * control-flow exception, success or not, so a successful run is observed
+ * here the same way: the mocked throw, plus the side effects
+ * (`prisma.quote.create`) that happened before it.
+ */
+async function expectRedirectSuccess(promise: Promise<void>) {
+  await expect(promise).rejects.toThrow(/^REDIRECT:\/quotes\//);
+}
+
 describe("createQuotes - section 18 quote creation", () => {
   it("creates a quote for a valid REVIEWED + AUTO_MATCHED line", async () => {
     mockFarmOfferLineFindMany.mockResolvedValue([farmOfferLine()]);
 
-    await createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" }));
+    await expectRedirectSuccess(createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })));
 
     expect(mockQuoteCreate).toHaveBeenCalledTimes(1);
   });
@@ -113,7 +132,7 @@ describe("createQuotes - section 18 quote creation", () => {
   it("uses the resolved quantityBoxes (from quantity+unit, not a boxesAvailable default) on the QuoteLine", async () => {
     mockFarmOfferLineFindMany.mockResolvedValue([farmOfferLine()]);
 
-    await createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" }));
+    await expectRedirectSuccess(createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })));
 
     const call = mockQuoteCreate.mock.calls[0][0];
     expect(call.data.lines.create[0].quantityBoxes).toBe(5);
@@ -124,12 +143,35 @@ describe("createQuotes - section 18 quote creation", () => {
       farmOfferLine({ stemsPerBox: 80, weightPerBoxKg: { toString: () => "7.500" } }),
     ]);
 
-    await createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" }));
+    await expectRedirectSuccess(createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })));
 
     const call = mockQuoteCreate.mock.calls[0][0];
     expect(call.data.lines.create[0].stemsPerBox).toBe(100);
     expect(call.data.lines.create[0].weightPerBoxKg).toBe("8.000");
   });
+
+  /**
+   * Business-state validation failures now redirect back to the wizard with
+   * a `?err=` message (see `redirectToWizardWithError` in `actions.ts`)
+   * instead of throwing a raw, uncaught Error - there is no error boundary
+   * for this route, so an uncaught throw surfaced in production as the
+   * generic "Application error: a server-side exception has occurred"
+   * crash page. `redirect()` itself still throws (that's how Next.js always
+   * behaves - see the mock above), so `.rejects` still applies; this helper
+   * additionally decodes the redirect URL to assert on the actual message.
+   */
+  async function expectRedirectError(promise: Promise<void>, messagePattern: RegExp) {
+    await expect(promise).rejects.toThrow(/^REDIRECT:/);
+    expect(mockRedirect).toHaveBeenCalledTimes(1);
+    const url = mockRedirect.mock.calls[0][0] as string;
+    const [path, query] = url.split("?");
+    expect(path).toBe("/quotes/new");
+    // application/x-www-form-urlencoded decoding (URLSearchParams, not
+    // decodeURIComponent) - matches how the app itself builds this URL with
+    // URLSearchParams.toString(), which encodes spaces as "+".
+    const err = new URLSearchParams(query).get("err");
+    expect(err).toMatch(messagePattern);
+  }
 
   it("one invalid line in the batch (DRAFT offer) blocks the entire creation - nothing is created", async () => {
     mockFarmOfferLineFindMany.mockResolvedValue([
@@ -137,9 +179,10 @@ describe("createQuotes - section 18 quote creation", () => {
       farmOfferLine({ id: "line-2", farmOffer: { farmId: "farm-1", status: "DRAFT", farm: { name: "Test Farm" } } }),
     ]);
 
-    await expect(
+    await expectRedirectError(
       createQuotes(makeFormData({ lineIds: ["line-1", "line-2"], customerIds: "customer-1" })),
-    ).rejects.toThrow(/Offer has not been reviewed/);
+      /Offer has not been reviewed/,
+    );
 
     expect(mockQuoteCreate).not.toHaveBeenCalled();
   });
@@ -149,9 +192,10 @@ describe("createQuotes - section 18 quote creation", () => {
       farmOfferLine({ packagingWeightProfileId: null, packagingWeightProfile: null, matchStatus: "UNMATCHED", stemsPerBox: null }),
     ]);
 
-    await expect(
+    await expectRedirectError(
       createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })),
-    ).rejects.toThrow(/Offer line has no confirmed assortment match/);
+      /Offer line has no confirmed assortment match/,
+    );
 
     expect(mockQuoteCreate).not.toHaveBeenCalled();
   });
@@ -163,9 +207,10 @@ describe("createQuotes - section 18 quote creation", () => {
       }),
     ]);
 
-    await expect(
+    await expectRedirectError(
       createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })),
-    ).rejects.toThrow(/another supplier/);
+      /another supplier/,
+    );
 
     expect(mockQuoteCreate).not.toHaveBeenCalled();
   });
@@ -175,9 +220,10 @@ describe("createQuotes - section 18 quote creation", () => {
       farmOfferLine({ farmOffer: { farmId: "farm-1", status: "DRAFT", farm: { name: "Test Farm" } } }),
     ]);
 
-    await expect(
+    await expectRedirectError(
       createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })),
-    ).rejects.toThrow(/Offer has not been reviewed/);
+      /Offer has not been reviewed/,
+    );
 
     expect(mockQuoteCreate).not.toHaveBeenCalled();
   });
@@ -187,10 +233,55 @@ describe("createQuotes - section 18 quote creation", () => {
       farmOfferLine({ unit: "STEMS", quantity: { toString: () => "550" } }),
     ]);
 
-    await expect(
+    await expectRedirectError(
       createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })),
-    ).rejects.toThrow(/cannot be converted to whole boxes/);
+      /cannot be converted to whole boxes/,
+    );
 
     expect(mockQuoteCreate).not.toHaveBeenCalled();
+  });
+
+  it("no product lines selected redirects back with a clear message instead of an uncaught exception", async () => {
+    await expectRedirectError(
+      createQuotes(makeFormData({ customerIds: "customer-1" })),
+      /Geen productregels geselecteerd/,
+    );
+
+    expect(mockFarmOfferLineFindMany).not.toHaveBeenCalled();
+    expect(mockQuoteCreate).not.toHaveBeenCalled();
+  });
+
+  it("no customers selected redirects back with a clear message instead of an uncaught exception", async () => {
+    mockFarmOfferLineFindMany.mockResolvedValue([farmOfferLine()]);
+
+    await expectRedirectError(createQuotes(makeFormData({ lineIds: "line-1" })), /Geen klanten geselecteerd/);
+
+    expect(mockQuoteCreate).not.toHaveBeenCalled();
+  });
+
+  it("every candidate line failing pricing (e.g. no route/freight rate) redirects back with a clear message, not a crash", async () => {
+    mockFarmOfferLineFindMany.mockResolvedValue([farmOfferLine()]);
+    mockPriceLineForCustomer.mockResolvedValue({
+      issues: [{ code: "INCOTERM_NOT_SUPPORTED_ON_ROUTE", message: "DDP wordt niet aangeboden op deze route" }],
+      breakdown: null,
+      context: { originId: null, exchangeRateIsManual: false, exchangeRateDefault: null, freightRatePerKg: null, freightRateUnit: null },
+    });
+
+    await expectRedirectError(
+      createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-1" })),
+      /Geen offerteregels konden worden berekend/,
+    );
+
+    expect(mockQuoteCreate).not.toHaveBeenCalled();
+  });
+
+  it("different customer ids do not change whether a valid line creates a quote (not customer-specific)", async () => {
+    mockFarmOfferLineFindMany.mockResolvedValue([farmOfferLine()]);
+    mockCustomerFindUniqueOrThrow.mockResolvedValue({ ...CUSTOMER, id: "customer-2", companyName: "Other Flowers" });
+
+    await expectRedirectSuccess(createQuotes(makeFormData({ lineIds: "line-1", customerIds: "customer-2" })));
+
+    expect(mockQuoteCreate).toHaveBeenCalledTimes(1);
+    expect(mockQuoteCreate.mock.calls[0][0].data.customerId).toBe("customer-2");
   });
 });
