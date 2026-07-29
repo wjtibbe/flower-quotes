@@ -132,13 +132,12 @@ export async function seedDatabase(prisma: PrismaClient): Promise<string> {
   }
 
   // ---------------------------------------------------------------------
-  // Exchange rates
+  // Exchange rates - EUR is the single base currency (see
+  // src/lib/exchangeRate.ts); USD->EUR is derived from this row, never
+  // stored separately.
   // ---------------------------------------------------------------------
   await prisma.exchangeRate.createMany({
-    data: [
-      { baseCurrency: Currency.USD, quoteCurrency: Currency.EUR, rate: "0.920000", notes: "Handmatig ingevoerd" },
-      { baseCurrency: Currency.EUR, quoteCurrency: Currency.USD, rate: "1.087000", notes: "Handmatig ingevoerd" },
-    ],
+    data: [{ baseCurrency: Currency.EUR, quoteCurrency: Currency.USD, rate: "1.087000", notes: "Handmatig ingevoerd" }],
   });
 
   // ---------------------------------------------------------------------

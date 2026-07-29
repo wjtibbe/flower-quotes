@@ -12,6 +12,7 @@ import {
   type PriceLineBreakdown,
   type ValidationIssue,
 } from "@/lib/pricing";
+import { BASE_CURRENCY, displayRate } from "@/lib/exchangeRate";
 import type { FarmOfferLine, Customer, FreightRateUnit } from "@prisma/client";
 
 export interface ResolvedPricingContext {
@@ -145,10 +146,14 @@ export async function resolvePricingContext(
   let exchangeRateDefault: string | null = null;
   if (line.currency !== customer.defaultCurrency) {
     // Always resolve the standard rate too, so we can show/store what the
-    // default would have been even when the user overrides it.
-    const standard = await findExchangeRate(line.currency, customer.defaultCurrency);
+    // default would have been even when the user overrides it. Exactly one of
+    // line.currency/customer.defaultCurrency is EUR here (both are drawn from
+    // the 2-currency Currency enum and they differ), so this is the currency
+    // the EUR-based rate is stored against.
+    const nonEurCurrency = line.currency === BASE_CURRENCY ? customer.defaultCurrency : line.currency;
+    const standard = await findEurRate(nonEurCurrency);
     if (standard) {
-      exchangeRateDefault = normalizedRateForPair(standard, line.currency, customer.defaultCurrency);
+      exchangeRateDefault = displayRate([standard], line.currency, customer.defaultCurrency);
     }
 
     const override = exchangeRateOverride?.trim();
@@ -217,42 +222,26 @@ async function resolveAdditionalCosts(routeId: string, now: Date): Promise<Addit
 }
 
 /**
- * The exchange rate to use right now for the {from,to} pair, in either stored
- * direction. Same "currently valid" rule as freight/additional costs:
- * already effective, not yet expired, newest effectiveFrom wins - so a
- * future-dated rate isn't used early and a closed one drops out. There is
- * one rate per pair (add replaces it).
+ * The current EUR-based rate for one non-EUR currency ("1 EUR = X currency").
+ * EUR is the only allowed base for manually maintained rates (see
+ * exchange-rates/actions.ts) - only baseCurrency = EUR rows are ever
+ * queried, so a legacy reversed row can never become the source of truth
+ * here even if it still exists. Same "currently valid" rule as
+ * freight/additional costs: already effective, not yet expired, newest
+ * effectiveFrom wins - so a future-dated rate isn't used early and a closed
+ * one drops out. There is one rate per target currency (add replaces it).
  */
-async function findExchangeRate(from: CurrencyCode, to: CurrencyCode) {
+async function findEurRate(currency: CurrencyCode) {
   const now = new Date();
   return prisma.exchangeRate.findFirst({
     where: {
+      baseCurrency: BASE_CURRENCY,
+      quoteCurrency: currency,
       effectiveFrom: { lte: now },
-      OR: [
-        { effectiveTo: null, baseCurrency: from, quoteCurrency: to },
-        { effectiveTo: null, baseCurrency: to, quoteCurrency: from },
-        { effectiveTo: { gte: now }, baseCurrency: from, quoteCurrency: to },
-        { effectiveTo: { gte: now }, baseCurrency: to, quoteCurrency: from },
-      ],
+      OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
     },
     orderBy: { effectiveFrom: "desc" },
   });
-}
-
-/**
- * Expresses a stored rate as "1 from = X to", inverting when the row is stored
- * in the opposite direction, so the default rate we surface for a pair is
- * always comparable to a user-entered override for the same pair.
- */
-function normalizedRateForPair(
-  rate: { baseCurrency: CurrencyCode; quoteCurrency: CurrencyCode; rate: { toString(): string } },
-  from: CurrencyCode,
-  to: CurrencyCode,
-): string {
-  const value = Number(rate.rate.toString());
-  if (rate.baseCurrency === from && rate.quoteCurrency === to) return value.toString();
-  if (rate.baseCurrency === to && rate.quoteCurrency === from && value !== 0) return (1 / value).toString();
-  return value.toString();
 }
 
 export interface LinePricingResult {

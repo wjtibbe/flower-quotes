@@ -2,13 +2,18 @@ import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { fmtMoney, fmtDateTime } from "@/lib/format";
 import ConfirmButton from "@/components/ConfirmButton";
+import { Currency } from "@prisma/client";
+import { BASE_CURRENCY } from "@/lib/exchangeRate";
 import { addExchangeRate, editExchangeRate, deleteExchangeRate } from "./actions";
 
 export const dynamic = "force-dynamic";
 
+// EUR is the only allowed base currency (see src/lib/exchangeRate.ts), so the
+// only selectable targets are the other configured currencies.
+const TARGET_CURRENCIES = Object.values(Currency).filter((c) => c !== BASE_CURRENCY);
+
 interface Params {
   q?: string;
-  base?: string;
   quote?: string;
   edit?: string;
   msg?: string;
@@ -23,13 +28,12 @@ const MESSAGES: Record<string, { text: string; ok: boolean }> = {
 export default async function ExchangeRatesPage({ searchParams }: { searchParams: Params }) {
   const rates = await prisma.exchangeRate.findMany({
     include: { updatedBy: { select: { name: true } } },
-    orderBy: [{ baseCurrency: "asc" }, { quoteCurrency: "asc" }, { effectiveFrom: "desc" }],
+    orderBy: [{ quoteCurrency: "asc" }, { effectiveFrom: "desc" }],
   });
 
   const contains = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase().includes(b.toLowerCase());
 
   const rows = rates.filter((r) => {
-    if (searchParams.base && r.baseCurrency !== searchParams.base) return false;
     if (searchParams.quote && r.quoteCurrency !== searchParams.quote) return false;
     if (searchParams.q) {
       const target = [r.baseCurrency, r.quoteCurrency, r.rate.toString(), r.notes, r.updatedBy?.name]
@@ -41,8 +45,7 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
   });
 
   const editing = searchParams.edit ? rates.find((r) => r.id === searchParams.edit) : null;
-  const currencyOptions = [...new Set(rates.flatMap((r) => [r.baseCurrency, r.quoteCurrency]))].sort();
-  const hasFilters = !!(searchParams.q || searchParams.base || searchParams.quote);
+  const hasFilters = !!(searchParams.q || searchParams.quote);
   const msg = searchParams.msg ? MESSAGES[searchParams.msg] : null;
 
   return (
@@ -50,8 +53,8 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Wisselkoersen</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Handmatig beheerde koersen. Elke offerte legt bij calculatie een eigen snapshot vast - latere wijzigingen
-          hier veranderen bestaande offertes nooit.
+          Handmatig beheerde koersen met EUR als vaste basisvaluta (1 EUR = ... doelvaluta). Elke offerte legt bij
+          calculatie een eigen snapshot vast - latere wijzigingen hier veranderen bestaande offertes nooit.
         </p>
       </div>
 
@@ -63,19 +66,10 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
 
       <form className="card p-4 flex flex-wrap gap-3 items-end">
         <div>
-          <label className="label">Bronvaluta</label>
-          <select name="base" defaultValue={searchParams.base ?? ""} className="input py-1 w-24">
-            <option value="">Alle</option>
-            {currencyOptions.map((c) => (
-              <option key={c} value={c}>{c}</option>
-            ))}
-          </select>
-        </div>
-        <div>
           <label className="label">Doelvaluta</label>
           <select name="quote" defaultValue={searchParams.quote ?? ""} className="input py-1 w-24">
             <option value="">Alle</option>
-            {currencyOptions.map((c) => (
+            {TARGET_CURRENCIES.map((c) => (
               <option key={c} value={c}>{c}</option>
             ))}
           </select>
@@ -96,7 +90,6 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
         <table className="table-base">
           <thead>
             <tr>
-              <th>Bronvaluta</th>
               <th>Doelvaluta</th>
               <th>Actuele koers</th>
               <th>Laatst gewijzigd</th>
@@ -107,8 +100,7 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
           <tbody>
             {rows.map((r) => (
               <tr key={r.id}>
-                <td className="font-medium">{r.baseCurrency}</td>
-                <td>{r.quoteCurrency}</td>
+                <td className="font-medium">{r.quoteCurrency}</td>
                 <td>
                   1 {r.baseCurrency} = {fmtMoney(r.rate, 6)} {r.quoteCurrency}
                 </td>
@@ -131,7 +123,7 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
             ))}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center text-gray-400 py-6">
+                <td colSpan={5} className="text-center text-gray-400 py-6">
                   {rates.length === 0
                     ? "Nog geen wisselkoersen ingevoerd."
                     : "Geen wisselkoersen gevonden met deze filters."}
@@ -148,14 +140,14 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
           <form action={editExchangeRate.bind(null, editing.id)} key={editing.id} className="grid grid-cols-2 gap-4">
             <div>
               <label className="label">Basisvaluta</label>
-              <input className="input bg-gray-50" value={editing.baseCurrency} disabled readOnly />
+              <input className="input bg-gray-50" value="EUR" disabled readOnly />
             </div>
             <div>
               <label className="label">Doelvaluta</label>
               <input className="input bg-gray-50" value={editing.quoteCurrency} disabled readOnly />
             </div>
             <div className="col-span-2">
-              <label className="label">Koers (1 {editing.baseCurrency} = ... {editing.quoteCurrency}) *</label>
+              <label className="label">Koers (1 EUR = ... {editing.quoteCurrency}) *</label>
               <input className="input" name="rate" type="number" step="0.000001" min="0" required defaultValue={editing.rate.toString()} />
             </div>
             <div className="col-span-2">
@@ -170,21 +162,19 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
         ) : (
           <form action={addExchangeRate} className="grid grid-cols-2 gap-4">
             <div>
-              <label className="label">Basisvaluta *</label>
-              <select className="input" name="baseCurrency" required defaultValue="USD">
-                <option value="USD">USD</option>
-                <option value="EUR">EUR</option>
-              </select>
+              <label className="label">Basisvaluta</label>
+              <input className="input bg-gray-50" value="EUR" disabled readOnly />
             </div>
             <div>
               <label className="label">Doelvaluta *</label>
-              <select className="input" name="quoteCurrency" required defaultValue="EUR">
-                <option value="USD">USD</option>
-                <option value="EUR">EUR</option>
+              <select className="input" name="quoteCurrency" required defaultValue={TARGET_CURRENCIES[0]}>
+                {TARGET_CURRENCIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
               </select>
             </div>
             <div className="col-span-2">
-              <label className="label">Koers (1 basis = ... doel) *</label>
+              <label className="label">Koers (1 EUR = ... doel) *</label>
               <input className="input" name="rate" type="number" step="0.000001" min="0" required placeholder="0.920000" />
             </div>
             <div className="col-span-2">

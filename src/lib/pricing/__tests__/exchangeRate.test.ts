@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { calculatePriceLine } from "../pipeline";
 import { convertCurrency } from "../calculations";
-import type { PriceLineInput } from "../types";
+import type { CurrencyCode, ExchangeRateSnapshot, PriceLineInput } from "../types";
 
 /**
  * These tests pin the exchange-rate snapshot behaviour that the Wisselkoersen
@@ -55,5 +55,38 @@ describe("exchange-rate snapshot behaviour", () => {
       rate: 1.1,
     });
     expect(converted.toString()).toBe("1");
+  });
+});
+
+describe("EUR-based rate derivation generalizes beyond a single non-EUR currency", () => {
+  // CurrencyCode is currently "USD" | "EUR" only - COP is not a real,
+  // supported currency in this system (see
+  // src/app/(app)/farms/__tests__/actions.test.ts, where an unsupported
+  // currency such as COP is explicitly rejected rather than accepted). These
+  // three tests use `as unknown as ExchangeRateSnapshot`/`as CurrencyCode` to
+  // prove that convertCurrency's existing algebra already derives a
+  // cross-currency conversion by chaining two EUR-based rates, with no
+  // separate manually maintained rate for the non-EUR pair - the business
+  // rule this module enforces (see src/lib/exchangeRate.ts), demonstrated
+  // generically in case a third currency is ever added.
+  const eurToUsd: ExchangeRateSnapshot = { baseCurrency: "EUR", quoteCurrency: "USD", rate: 1.17 };
+  const eurToCop = { baseCurrency: "EUR", quoteCurrency: "COP", rate: 4500 } as unknown as ExchangeRateSnapshot;
+
+  it("EUR -> COP works directly from a stored EUR-based rate", () => {
+    const result = convertCurrency(1, "EUR" as CurrencyCode, "COP" as CurrencyCode, eurToCop);
+    expect(result.toString()).toBe("4500");
+  });
+
+  it("COP -> EUR is derived by dividing the same stored rate (no inverse row needed)", () => {
+    const result = convertCurrency(4500, "COP" as CurrencyCode, "EUR" as CurrencyCode, eurToCop);
+    expect(result.toString()).toBe("1");
+  });
+
+  it("USD -> COP derives via EUR by chaining the two EUR-based rates - no manually maintained USD/COP rate is required", () => {
+    const amountUsd = 117;
+    const amountEur = convertCurrency(amountUsd, "USD", "EUR", eurToUsd);
+    const amountCop = convertCurrency(amountEur, "EUR" as CurrencyCode, "COP" as CurrencyCode, eurToCop);
+    // 117 USD -> 100 EUR -> 450000 COP
+    expect(amountCop.toString()).toBe("450000");
   });
 });

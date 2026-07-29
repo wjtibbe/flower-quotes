@@ -6,6 +6,8 @@ import { createQuotes } from "../actions";
 import { QUOTABLE_MATCH_STATUSES, QUOTABLE_OFFER_STATUS } from "@/lib/quotes/lineGating";
 import { resolveCanonicalPackaging } from "@/lib/quotes/canonicalPackaging";
 import { resolveOfferLinePricingQuantity, type OfferLineUnit } from "@/lib/quotes/quantityResolution";
+import { displayRate } from "@/lib/exchangeRate";
+import type { CurrencyCode } from "@/lib/pricing";
 
 export const dynamic = "force-dynamic";
 
@@ -81,17 +83,9 @@ export default async function NewQuotePage({
   // customer whether a conversion (and thus an exchange rate) applies.
   const lineCurrencies = [...new Set(lines.map(({ line }) => line.currency))];
 
-  /** "1 from = X to" using a rate in either stored direction, or null. */
+  /** "1 from = X to" derived from the EUR-based rate, or null. */
   function currentRateFor(from: string, to: string): string | null {
-    if (from === to) return null;
-    const match = activeRates.find(
-      (r) =>
-        (r.baseCurrency === from && r.quoteCurrency === to) || (r.baseCurrency === to && r.quoteCurrency === from),
-    );
-    if (!match) return null;
-    const v = Number(match.rate.toString());
-    if (match.baseCurrency === from) return v.toString();
-    return v !== 0 ? (1 / v).toFixed(6) : v.toString();
+    return displayRate(activeRates, from as CurrencyCode, to as CurrencyCode);
   }
 
   const err = searchParams.err;
