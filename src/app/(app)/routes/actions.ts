@@ -3,7 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import type { CostCategory, CostRateUnit, FreightRateUnit, TransportType } from "@prisma/client";
+import type { CostRateUnit, FreightRateUnit, TransportType } from "@prisma/client";
+import { validateRouteCostInput } from "@/lib/additionalCostTypes";
 
 function norm(v: FormDataEntryValue | null): string | null {
   const s = String(v ?? "").trim();
@@ -124,30 +125,41 @@ export async function toggleRouteSupportsDdp(routeId: string, current: boolean):
 // --- Route additional costs (DDP clearing/inspection/handling/import/...) ---
 
 /**
- * Adds an additional cost line to a route. Multiple costs per route are
+ * Adds an additional cost line to a route. The user picks a configured
+ * AdditionalCostType ("Kostensoort") instead of typing a free-text name -
+ * that's the canonical reference going forward; `name`/`category` are still
+ * stored on the row too, but only as a snapshot taken from the type at
+ * creation time, so history reads correctly even if the type is later
+ * renamed (see displayAdditionalCostName). Multiple costs per route are
  * allowed; the pricing engine picks, per (category, name), the currently
  * valid newest one - so a later-dated row supersedes automatically without
  * touching history.
  */
 export async function addRouteCost(routeId: string, formData: FormData): Promise<void> {
-  const name = norm(formData.get("name"));
-  const category = norm(formData.get("category")) as CostCategory | null;
+  const additionalCostTypeId = norm(formData.get("additionalCostTypeId"));
   const rateUnit = norm(formData.get("rateUnit")) as CostRateUnit | null;
   const amount = norm(formData.get("amount"));
   const currency = norm(formData.get("currency")) ?? "USD";
   const effectiveFromRaw = norm(formData.get("effectiveFrom"));
   const effectiveToRaw = norm(formData.get("effectiveTo"));
-  if (!name || !category || !rateUnit || !amount) {
-    throw new Error("Naam, categorie, rekeneenheid en bedrag zijn verplicht");
-  }
+
+  const validationError = validateRouteCostInput({ additionalCostTypeId, amount, currency, rateUnit, effectiveFrom: effectiveFromRaw, effectiveTo: effectiveToRaw });
+  if (validationError) redirect(`/routes?err=${encodeURIComponent(validationError)}`);
+  // validateRouteCostInput already rejected a missing additionalCostTypeId/amount above.
+  const validAdditionalCostTypeId = additionalCostTypeId!;
+  const validAmount = amount!;
+
+  const costType = await prisma.additionalCostType.findUnique({ where: { id: validAdditionalCostTypeId } });
+  if (!costType) redirect(`/routes?err=${encodeURIComponent("Onbekende kostensoort geselecteerd")}`);
 
   await prisma.ddpCostRate.create({
     data: {
       routeId,
-      name,
-      category,
+      additionalCostTypeId: validAdditionalCostTypeId,
+      name: costType.name,
+      category: costType.category,
       rateUnit,
-      amount,
+      amount: validAmount,
       currency,
       effectiveFrom: effectiveFromRaw ? new Date(effectiveFromRaw) : new Date(),
       effectiveTo: effectiveToRaw ? new Date(effectiveToRaw) : null,
@@ -155,6 +167,48 @@ export async function addRouteCost(routeId: string, formData: FormData): Promise
     },
   });
   revalidatePath("/routes");
+}
+
+/**
+ * Edits an existing route additional cost in place: cost type, amount,
+ * currency, unit and validity dates. Same validation rules as `addRouteCost`
+ * (shared via `validateRouteCostInput`) so add and edit can never drift.
+ * `name`/`category` are re-snapshotted from the (possibly newly chosen)
+ * type, matching what a fresh `addRouteCost` would store.
+ */
+export async function updateRouteCost(id: string, formData: FormData): Promise<void> {
+  const additionalCostTypeId = norm(formData.get("additionalCostTypeId"));
+  const rateUnit = norm(formData.get("rateUnit")) as CostRateUnit | null;
+  const amount = norm(formData.get("amount"));
+  const currency = norm(formData.get("currency")) ?? "USD";
+  const effectiveFromRaw = norm(formData.get("effectiveFrom"));
+  const effectiveToRaw = norm(formData.get("effectiveTo"));
+
+  const validationError = validateRouteCostInput({ additionalCostTypeId, amount, currency, rateUnit, effectiveFrom: effectiveFromRaw, effectiveTo: effectiveToRaw });
+  if (validationError) redirect(`/routes?err=${encodeURIComponent(validationError)}`);
+  // validateRouteCostInput already rejected a missing additionalCostTypeId/amount above.
+  const validAdditionalCostTypeId = additionalCostTypeId!;
+  const validAmount = amount!;
+
+  const costType = await prisma.additionalCostType.findUnique({ where: { id: validAdditionalCostTypeId } });
+  if (!costType) redirect(`/routes?err=${encodeURIComponent("Onbekende kostensoort geselecteerd")}`);
+
+  await prisma.ddpCostRate.update({
+    where: { id },
+    data: {
+      additionalCostTypeId: validAdditionalCostTypeId,
+      name: costType.name,
+      category: costType.category,
+      rateUnit,
+      amount: validAmount,
+      currency,
+      effectiveFrom: effectiveFromRaw ? new Date(effectiveFromRaw) : new Date(),
+      effectiveTo: effectiveToRaw ? new Date(effectiveToRaw) : null,
+      notes: norm(formData.get("notes")),
+    },
+  });
+  revalidatePath("/routes");
+  redirect("/routes?msg=cost-updated");
 }
 
 /** Hard-deletes a cost line. Safe: quotes snapshot their own cost values. */

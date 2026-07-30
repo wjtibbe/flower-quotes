@@ -356,6 +356,17 @@ model DdpCostRate {
   // Legacy discriminator, now optional. New rows use name/category/rateUnit
   // instead; kept so historical rows and any old readers stay valid.
   costType      DdpCostType?
+  // The canonical vocabulary entry this cost was created from - the actual
+  // source of truth for terminology (see AdditionalCostType). Nullable so
+  // pre-existing rows can be backfilled without a hard migration failure,
+  // and so a row whose name genuinely doesn't match anything known yet can
+  // still exist without being force-linked to the wrong type.
+  additionalCostTypeId String?
+  // Human label / historical snapshot, kept for display even if the
+  // AdditionalCostType is later renamed or deactivated - "acceptable to
+  // retain a snapshot/display name for historical output", but the
+  // canonical relationship for anything NEW is additionalCostTypeId, never
+  // this text alone.
   name          String? // human label, e.g. "Clearing & inspection"
   category      CostCategory?
   rateUnit      CostRateUnit?
@@ -367,10 +378,39 @@ model DdpCostRate {
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
 
-  route Route @relation(fields: [routeId], references: [id])
+  route              Route               @relation(fields: [routeId], references: [id])
+  additionalCostType AdditionalCostType? @relation(fields: [additionalCostTypeId], references: [id])
 
   @@index([routeId])
   @@index([routeId, costType])
+  @@index([additionalCostTypeId])
+}
+
+// Centrally managed vocabulary for route additional costs ("Aanvullende
+// kostensoorten") - one place to define "Clearing"/"Handling"/"Inspection"/
+// etc so the same terminology is used everywhere a cost is added, priced,
+// or displayed (Routes & Freight, quote pricing, quote detail, exports).
+// Deliberately reuses the existing CostCategory/CostRateUnit enums rather
+// than inventing new ones - `defaultUnit` is only a prefill for the add
+// form, the actual per-route DdpCostRate keeps its own editable unit.
+model AdditionalCostType {
+  id   String @id @default(uuid())
+  name String // official display name, e.g. "Clearing"
+  // Lowercased/trimmed `name`, enforced unique so "Clearing"/"clearing"/
+  // "CLEARING" can never coexist as separate types - the actual guard
+  // against duplicate terminology.
+  normalizedName String  @unique
+  category       CostCategory
+  defaultUnit    CostRateUnit
+  description    String?
+  // Deactivating (never hard-deleting) is how a type is retired once it's
+  // referenced by any route cost - see deleteAdditionalCostType in
+  // settings/actions.ts, which refuses to hard-delete a type still in use.
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  costRates DdpCostRate[]
 }
 
 // ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ import { quoteForExportInclude } from "@/lib/exports/types";
 import { quoteTotals } from "@/lib/quoteTotals";
 import { variantLabel } from "@/lib/variantLabel";
 import CopyButton from "@/components/CopyButton";
+import { displayAdditionalCostName } from "@/lib/additionalCostTypes";
 import { overrideQuoteLinePrice, clearQuoteLineOverride, setQuoteStatus, generateExport } from "../actions";
 import { QuoteExportType, QuoteStatus } from "@prisma/client";
 
@@ -107,7 +108,7 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
               const additionalTotal = Number(line.additionalCostPerStem ?? clearingInsp + handling);
               const other = Math.max(0, additionalTotal - clearingInsp - handling);
               const costItems = Array.isArray(line.additionalCostsSnapshot)
-                ? (line.additionalCostsSnapshot as { name: string; unit: string; perStem: string }[])
+                ? (line.additionalCostsSnapshot as { name: string | null; unit: string; perStem: string }[])
                 : [];
 
               // Supplier: the line's own snapshot, with the farm-offer path as
@@ -133,7 +134,7 @@ export default async function QuoteDetailPage({ params }: { params: { id: string
                         <div className="absolute z-10 mt-1 bg-white border border-gray-200 rounded shadow p-2 text-xs">
                           {costItems.map((c, i) => (
                             <div key={i} className="whitespace-nowrap">
-                              {c.name}: {fmtMoney(c.perStem, 4)}/steel
+                              {displayAdditionalCostName(c)}: {fmtMoney(c.perStem, 4)}/steel
                             </div>
                           ))}
                         </div>

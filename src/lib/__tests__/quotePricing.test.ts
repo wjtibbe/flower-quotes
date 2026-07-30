@@ -363,6 +363,20 @@ describe("resolvePricingContext - additional cost categories", () => {
     const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
     expect(ctx.additionalCosts).toEqual([{ name: "Handling", category: "HANDLING", amount: "1.5", unit: "PER_BOX" }]);
   });
+
+  it("15: linking a cost to an AdditionalCostType (additionalCostTypeId set) does not change the resolved amount/category/unit - only the terminology source changed, not the math", async () => {
+    const rowWithoutLink = { name: "Clearing", category: "CLEARING", rateUnit: "PER_STEM", amount: { toString: () => "0.015" }, effectiveFrom: NOW, effectiveTo: null };
+    const rowWithLink = { ...rowWithoutLink, additionalCostTypeId: "type-clearing" };
+
+    mockDdpCostRateFindMany.mockResolvedValue([rowWithoutLink]);
+    const before = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
+
+    mockDdpCostRateFindMany.mockResolvedValue([rowWithLink]);
+    const after = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
+
+    expect(after.additionalCosts).toEqual(before.additionalCosts);
+    expect(after.additionalCosts).toEqual([{ name: "Clearing", category: "CLEARING", amount: "0.015", unit: "PER_STEM" }]);
+  });
 });
 
 describe("priceLineForCustomer - actionable route-specific errors", () => {

@@ -3,6 +3,12 @@ import { prisma } from "@/lib/db";
 import { fmtMoney, fmtDate } from "@/lib/format";
 import ConfirmButton from "@/components/ConfirmButton";
 import {
+  COST_CATEGORY_LABELS,
+  COST_RATE_UNIT_LABELS,
+  displayAdditionalCostName,
+  filterActiveCostTypes,
+} from "@/lib/additionalCostTypes";
+import {
   createOrigin,
   createDestination,
   createRoute,
@@ -12,6 +18,7 @@ import {
   toggleRouteSupportsCfr,
   toggleRouteSupportsDdp,
   addRouteCost,
+  updateRouteCost,
   deleteRouteCost,
 } from "./actions";
 
@@ -23,21 +30,10 @@ const TRANSPORT_LABELS: Record<string, string> = {
   LOCAL_DELIVERY: "Lokale bezorging",
   SEA: "Zeevracht",
 };
-const UNIT_LABELS: Record<string, string> = {
-  PER_KG: "per kg",
-  PER_BOX: "per doos",
-  PER_STEM: "per steel",
-  FLAT: "vast bedrag",
-};
-const CATEGORY_LABELS: Record<string, string> = {
-  CLEARING: "Clearing",
-  INSPECTION: "Inspection",
-  IMPORT: "Import",
-  HANDLING: "Handling",
-  LOCAL_DELIVERY: "Lokale bezorging",
-  DOCUMENTATION: "Documentatie",
-  OTHER: "Overige",
-};
+// Covers both FreightRateUnit (PER_KG/PER_BOX/PER_STEM) and CostRateUnit
+// (adds FLAT) - one shared Dutch label map, see additionalCostTypes.ts.
+const UNIT_LABELS: Record<string, string> = COST_RATE_UNIT_LABELS;
+const CATEGORY_LABELS: Record<string, string> = COST_CATEGORY_LABELS;
 
 /** The additional cost that pricing would use now: valid, newest per (category,name). */
 function currentCosts<
@@ -64,6 +60,11 @@ interface Params {
   sort?: string;
   dir?: string;
   msg?: string;
+  err?: string;
+  // The DdpCostRate id currently shown as an inline edit row (compact -
+  // replaces just that one row within the route's own expanded section,
+  // never a separate page/modal, so the route context is never lost).
+  editCost?: string;
 }
 
 const MESSAGES: Record<string, { text: string; ok: boolean }> = {
@@ -73,6 +74,7 @@ const MESSAGES: Record<string, { text: string; ok: boolean }> = {
   "destination-exists": { text: "Deze bestemming bestaat al (stad + land) - geen duplicaat aangemaakt.", ok: false },
   "route-created": { text: "Route aangemaakt.", ok: true },
   "route-exists": { text: "Deze route (vertrek + bestemming + transporttype) bestaat al.", ok: false },
+  "cost-updated": { text: "Aanvullende kost bijgewerkt.", ok: true },
 };
 
 /** The rate pricing would use right now: within validity, newest effectiveFrom. */
@@ -91,19 +93,23 @@ function currentRate<T extends { effectiveFrom: Date; effectiveTo: Date | null }
 const ROW_GRID = "grid grid-cols-[1.4fr_1.4fr_1fr_1fr_0.8fr_1fr_1.25rem] gap-3 items-center";
 
 export default async function RoutesPage({ searchParams }: { searchParams: Params }) {
-  const [routes, origins, destinations] = await Promise.all([
+  const [routes, origins, destinations, costTypes] = await Promise.all([
     prisma.route.findMany({
       include: {
         origin: true,
         destination: true,
         freightRates: { orderBy: { effectiveFrom: "desc" } },
-        ddpCostRates: { orderBy: [{ category: "asc" }, { effectiveFrom: "desc" }] },
+        ddpCostRates: { orderBy: [{ category: "asc" }, { effectiveFrom: "desc" }], include: { additionalCostType: true } },
       },
       orderBy: { createdAt: "asc" },
     }),
     prisma.origin.findMany({ orderBy: { city: "asc" } }),
     prisma.destination.findMany({ orderBy: { city: "asc" } }),
+    prisma.additionalCostType.findMany({ orderBy: { name: "asc" } }),
   ]);
+  // The add form only ever offers active types ("Kostensoort" dropdown) -
+  // inactive ones stay usable for historical rows but can't be picked again.
+  const activeCostTypes = filterActiveCostTypes(costTypes);
 
   const ci = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase() === b.toLowerCase();
   const contains = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase().includes(b.toLowerCase());
@@ -168,6 +174,16 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
     if (sortKey === key && dir === 1) p.set("dir", "desc");
     return `/routes?${p.toString()}`;
   };
+  /** Current URL with the given keys overridden (or removed, when value is undefined) - used for the ?editCost= inline-edit toggle so it preserves filters/sort/route context. */
+  const buildUrl = (overrides: Record<string, string | undefined>) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(searchParams)) if (v && k !== "msg" && k !== "err") p.set(k, v);
+    for (const [k, v] of Object.entries(overrides)) {
+      if (v === undefined) p.delete(k);
+      else p.set(k, v);
+    }
+    return `/routes?${p.toString()}`;
+  };
   const Th = ({ k, children }: { k: string; children: React.ReactNode }) => (
     <Link href={sortLink(k)} className="hover:underline text-xs font-semibold text-gray-600">
       {children}
@@ -192,6 +208,9 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
         <div className={`card p-3 text-sm ${msg.ok ? "bg-green-50 border-green-200 text-green-800" : "bg-amber-50 border-amber-200 text-amber-800"}`}>
           {msg.text}
         </div>
+      )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
       )}
 
       <form className="card p-3 flex flex-wrap gap-3 items-end">
@@ -407,27 +426,111 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                         </tr>
                       </thead>
                       <tbody>
-                        {route.ddpCostRates.map((c) => (
-                          <tr key={c.id} className={activeCostIds.has(c.id) ? "font-semibold" : ""}>
-                            <td>{c.name ?? "-"}</td>
-                            <td>{c.category ? CATEGORY_LABELS[c.category] : "-"}</td>
-                            <td>{c.currency} {fmtMoney(c.amount, 4)}</td>
-                            <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
-                            <td>{fmtDate(c.effectiveFrom)}</td>
-                            <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
-                            <td>{activeCostIds.has(c.id) && <span className="badge-high">in gebruik</span>}</td>
-                            <td>
-                              <form action={deleteRouteCost.bind(null, c.id)}>
-                                <ConfirmButton
-                                  message="Weet je zeker dat je deze aanvullende kost wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
-                                  className="text-xs text-red-600 hover:underline"
-                                >
-                                  Verwijderen
-                                </ConfirmButton>
-                              </form>
-                            </td>
-                          </tr>
-                        ))}
+                        {route.ddpCostRates.map((c) => {
+                          if (searchParams.editCost === c.id) {
+                            // The row's own type may since have been deactivated - still offer it
+                            // (plus all other active types) so editing doesn't force a type change.
+                            const editOptions = c.additionalCostType && !c.additionalCostType.isActive
+                              ? [c.additionalCostType, ...activeCostTypes]
+                              : activeCostTypes;
+                            return (
+                              <tr key={c.id}>
+                                <td colSpan={8}>
+                                  <form
+                                    action={updateRouteCost.bind(null, c.id)}
+                                    className="flex flex-wrap gap-2 items-end py-1"
+                                  >
+                                    <div>
+                                      <label className="label">Kostensoort</label>
+                                      <select
+                                        name="additionalCostTypeId"
+                                        required
+                                        className="input py-1 px-2 text-xs"
+                                        defaultValue={c.additionalCostTypeId ?? ""}
+                                      >
+                                        {editOptions.map((t) => (
+                                          <option key={t.id} value={t.id}>
+                                            {t.name} ({CATEGORY_LABELS[t.category]} · {UNIT_LABELS[t.defaultUnit]})
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="label">Bedrag</label>
+                                      <input
+                                        name="amount"
+                                        type="number"
+                                        step="0.0001"
+                                        required
+                                        defaultValue={c.amount.toString()}
+                                        className="input py-1 px-2 text-xs w-24"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="label">Valuta</label>
+                                      <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue={c.currency}>
+                                        <option value="USD">USD</option>
+                                        <option value="EUR">EUR</option>
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="label">Eenheid</label>
+                                      <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue={c.rateUnit ?? ""}>
+                                        {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                      </select>
+                                    </div>
+                                    <div>
+                                      <label className="label">Geldig vanaf</label>
+                                      <input
+                                        name="effectiveFrom"
+                                        type="date"
+                                        defaultValue={c.effectiveFrom.toISOString().slice(0, 10)}
+                                        className="input py-1 px-2 text-xs"
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="label">Geldig tot</label>
+                                      <input
+                                        name="effectiveTo"
+                                        type="date"
+                                        defaultValue={c.effectiveTo ? c.effectiveTo.toISOString().slice(0, 10) : ""}
+                                        className="input py-1 px-2 text-xs"
+                                      />
+                                    </div>
+                                    <button className="btn-primary py-1 px-2 text-xs">Opslaan</button>
+                                    <Link href={buildUrl({ editCost: undefined })} className="text-xs text-gray-500 hover:underline px-2">
+                                      Annuleren
+                                    </Link>
+                                  </form>
+                                </td>
+                              </tr>
+                            );
+                          }
+                          return (
+                            <tr key={c.id} className={activeCostIds.has(c.id) ? "font-semibold" : ""}>
+                              <td>{displayAdditionalCostName(c)}</td>
+                              <td>{c.category ? CATEGORY_LABELS[c.category] : "-"}</td>
+                              <td>{c.currency} {fmtMoney(c.amount, 4)}</td>
+                              <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
+                              <td>{fmtDate(c.effectiveFrom)}</td>
+                              <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
+                              <td>{activeCostIds.has(c.id) && <span className="badge-high">in gebruik</span>}</td>
+                              <td className="whitespace-nowrap">
+                                <Link href={buildUrl({ editCost: c.id })} className="text-xs text-blue-600 hover:underline mr-2">
+                                  Bewerken
+                                </Link>
+                                <form action={deleteRouteCost.bind(null, c.id)} className="inline">
+                                  <ConfirmButton
+                                    message="Weet je zeker dat je deze aanvullende kost wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
+                                    className="text-xs text-red-600 hover:underline"
+                                  >
+                                    Verwijderen
+                                  </ConfirmButton>
+                                </form>
+                              </td>
+                            </tr>
+                          );
+                        })}
                         {route.ddpCostRates.length === 0 && (
                           <tr><td colSpan={8} className="text-gray-400">Nog geen aanvullende kosten.</td></tr>
                         )}
@@ -437,13 +540,14 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
 
                   <form action={addRouteCost.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
                     <div>
-                      <label className="label">Naam</label>
-                      <input name="name" required className="input py-1 px-2 text-xs w-32" />
-                    </div>
-                    <div>
-                      <label className="label">Categorie</label>
-                      <select name="category" className="input py-1 px-2 text-xs" defaultValue="CLEARING">
-                        {Object.entries(CATEGORY_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      <label className="label">Kostensoort</label>
+                      <select name="additionalCostTypeId" required className="input py-1 px-2 text-xs">
+                        <option value="">Kies een kostensoort...</option>
+                        {activeCostTypes.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} ({CATEGORY_LABELS[t.category]} · {UNIT_LABELS[t.defaultUnit]})
+                          </option>
+                        ))}
                       </select>
                     </div>
                     <div>
@@ -473,6 +577,11 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                     </div>
                     <button className="btn-primary py-1 px-2 text-xs">Kosten toevoegen</button>
                   </form>
+                  <div className="text-xs">
+                    <Link href="/settings" className="text-gray-500 hover:underline">
+                      Nieuwe kostensoort beheren →
+                    </Link>
+                  </div>
                 </div>
               </div>
             </details>
