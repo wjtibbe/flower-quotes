@@ -98,6 +98,9 @@ export default async function AssortmentPage({ searchParams }: { searchParams: F
           <Link href="/products/bulk" className="btn-secondary py-1.5 px-3 text-sm">
             Bulk toevoegen
           </Link>
+          <Link href="/farm-offers/manual" className="btn-secondary py-1.5 px-3 text-sm">
+            + Handmatige aanbieding
+          </Link>
         </div>
       </div>
 

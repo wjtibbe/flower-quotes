@@ -45,4 +45,9 @@ describe("isFarmOfferLineQuotable - section 15 gating", () => {
     const r = isFarmOfferLineQuotable({ offerStatus: "ARCHIVED", matchStatus: "AUTO_MATCHED", packagingWeightProfileId: "profile-1" });
     expect(r.ok).toBe(false);
   });
+
+  it("25/26/27: a manually-created offer line (saveManualOfferLines always sets USER_LINKED + a real packagingWeightProfileId) is quotable through this exact same gate once its offer is reviewed - no separate manual-offer quoting path exists", () => {
+    const r = isFarmOfferLineQuotable({ offerStatus: "REVIEWED", matchStatus: "USER_LINKED", packagingWeightProfileId: "profile-a" });
+    expect(r.ok).toBe(true);
+  });
 });

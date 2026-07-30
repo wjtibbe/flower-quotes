@@ -40,6 +40,9 @@ export default async function FarmOffersPage({
           <Link href="/farm-offers/mappings" className="btn-secondary">
             Supplier mappings beheren
           </Link>
+          <Link href="/farm-offers/manual" className="btn-secondary">
+            + Handmatige aanbieding
+          </Link>
           <Link href="/farm-offers/upload" className="btn-primary">
             + Nieuwe aanbieding uploaden
           </Link>

@@ -536,10 +536,18 @@ enum FarmOfferStatus {
   ARCHIVED
 }
 
+// How a FarmOffer's lines were originally entered - AI_IMPORT covers file/pasted-text
+// parsing, MANUAL is direct assortment-picker entry ("Handmatige aanbieding").
+enum FarmOfferSource {
+  AI_IMPORT
+  MANUAL
+}
+
 model FarmOffer {
   id             String          @id @default(uuid())
   farmId         String?
   sourceUploadId String?
+  source         FarmOfferSource @default(AI_IMPORT)
   title          String?
   offerDate      DateTime?
   validUntil     DateTime?
