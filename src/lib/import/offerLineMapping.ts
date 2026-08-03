@@ -132,6 +132,23 @@ export function readValidationMessages(value: unknown): string[] {
 }
 
 /**
+ * Every offer line price represents a FOB price per stem (`priceUnit` is
+ * always fixed to `PER_STEM` - see `mapParsedOfferLineToCreateInput` below).
+ * The price itself, however, is always mandatory: never defaulted, guessed
+ * or fabricated. This is the ONE shared "is this a real, usable price"
+ * check - zero and negative are both invalid, not just missing - reused by
+ * both the blocking finalization check (`offerLineValidation.ts`) and the
+ * PRICE warning-topic reconciliation (`farmOfferEnrichment.ts`) so a price
+ * of "0" can never be treated as resolved in one place and blocking in
+ * another.
+ */
+export function isValidFobPrice(value: string | number | null | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0;
+}
+
+/**
  * There is only one `validationWarnings` column, but two genuinely different
  * kinds of warning feed into it (review-screen rebuild, section 18):
  *  A. the original parser's own warnings from import time - preserved in
@@ -265,7 +282,7 @@ export function mapParsedOfferLineToCreateInput(
     // Temporary global rule: "we only offer QB for now" - HB normalizes to
     // QB on the CURRENT/persisted field only; `extractedSnapshot` below is
     // built from the untouched `line` and always keeps the original "HB".
-    boxType: normalizeBoxTypeForImport(line.boxType) ?? undefined,
+    boxType: normalizeBoxTypeForImport(line.boxType),
     boxesAvailable,
     stemsPerBox: line.stemsPerBox,
     stemLengthCm: line.lengthCm,

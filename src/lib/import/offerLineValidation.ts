@@ -1,5 +1,5 @@
 import type { OfferUnitLike } from "./types";
-import { mergeValidationWarnings, normalizeValidationMessages, readValidationMessages } from "./offerLineMapping";
+import { isValidFobPrice, mergeValidationWarnings, normalizeValidationMessages, readValidationMessages } from "./offerLineMapping";
 import { reconcileWarnings } from "./farmOfferEnrichment";
 
 /**
@@ -87,8 +87,12 @@ export function validateOfferLineForFinalization(line: FinalizationCheckInput): 
   if (!isPresent(line.varietyRaw)) {
     errors.push("Variëteit ontbreekt.");
   }
-  if (!isPresent(line.fobPricePerStem)) {
-    errors.push("FOB-prijs per steel ontbreekt.");
+  // FOB price per stem is always mandatory - never defaulted, guessed or
+  // fabricated - and must be a genuinely positive value: missing, "0" and a
+  // negative price are all blocking (see `isValidFobPrice`, the one shared
+  // check reused by the PRICE warning-topic reconciliation below).
+  if (!isValidFobPrice(line.fobPricePerStem)) {
+    errors.push("FOB-prijs per steel ontbreekt of moet groter zijn dan nul.");
   }
   if (!isPresent(line.currency)) {
     errors.push("Valuta ontbreekt.");
@@ -152,12 +156,24 @@ export function computeLineValidationMessages(
 ): ComputedLineValidationMessages {
   const snapshot = extractedSnapshot && typeof extractedSnapshot === "object" ? (extractedSnapshot as Record<string, unknown>) : null;
   const rawParserWarnings = readValidationMessages(snapshot?.parserWarnings);
+  // Same quantity/unit fallback `validateOfferLineForFinalization` uses
+  // below, so a warning about missing quantity/unit is reconciled exactly
+  // when the blocking/non-blocking check below would also consider it
+  // resolved. Box type and the Farm/Supplier are fixed application defaults
+  // (QB-only, and the supplier is always selected before any line exists) -
+  // always resolved, never re-derived from source text.
+  const effectiveUnitForWarnings = next.unit ?? (next.boxesAvailable != null ? "BOXES" : null);
+  const effectiveQuantityForWarnings = isPresent(next.quantity) ? next.quantity : (next.boxesAvailable ?? null);
   const parserWarnings = reconcileWarnings(rawParserWarnings, {
     stemsPerBox: isPresent(next.stemsPerBox),
     boxWeight: isPresent(next.weightPerBoxKg),
-    price: isPresent(next.fobPricePerStem),
+    price: isValidFobPrice(next.fobPricePerStem),
     currency: isPresent(next.currency),
     totalStems: next.totalStems !== null && next.totalStems !== undefined,
+    quantity: isPresent(effectiveQuantityForWarnings),
+    unit: effectiveUnitForWarnings != null,
+    boxType: true,
+    farm: true,
   });
   const { errors, warnings } = validateOfferLineForFinalization(next);
   return {

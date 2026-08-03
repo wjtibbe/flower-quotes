@@ -46,7 +46,18 @@ const BOULEVARD_PROFILE: MatchedPackagingInfo = {
 };
 
 function resolved(overrides: Partial<ResolvedWarningTopics> = {}): ResolvedWarningTopics {
-  return { stemsPerBox: false, boxWeight: false, price: false, currency: false, totalStems: false, ...overrides };
+  return {
+    stemsPerBox: false,
+    boxWeight: false,
+    price: false,
+    currency: false,
+    totalStems: false,
+    quantity: false,
+    unit: false,
+    boxType: false,
+    farm: false,
+    ...overrides,
+  };
 }
 
 describe("resolveEffectiveCurrency - supplier defaultCurrency", () => {
@@ -168,12 +179,12 @@ describe("enrichParsedOfferLine - the Sweetness example end to end", () => {
     expect(out.rawText).toBe("2hb Sweetness 40cm");
   });
 
-  it("leaves an unmatched line's packaging fields untouched (nothing trusted to enrich from)", () => {
+  it("leaves an unmatched line's packaging fields untouched, but still normalizes box type (deterministic default, independent of matching)", () => {
     const input = line({ boxType: "HB", stemsPerBox: undefined, weightPerBoxKg: undefined });
     const out = enrichParsedOfferLine(input, null, "USD");
     expect(out.stemsPerBox).toBeUndefined();
     expect(out.weightPerBoxKg).toBeUndefined();
-    expect(out.boxType).toBe("HB");
+    expect(out.boxType).toBe("QB");
   });
 
   it("preserves an explicit EUR even when the supplier default is USD", () => {
@@ -182,11 +193,11 @@ describe("enrichParsedOfferLine - the Sweetness example end to end", () => {
     expect(out.currency).toBe("EUR");
   });
 
-  it("does not backfill quantity/unit when already explicit", () => {
+  it("keeps an explicit quantity, but unit is always forced to BOXES (deterministic default: availability is only ever administered in boxes)", () => {
     const input = line({ quantity: "5", unit: "STEMS", boxesAvailable: 2 });
     const out = enrichParsedOfferLine(input, null, "USD");
     expect(out.quantity).toBe("5");
-    expect(out.unit).toBe("STEMS");
+    expect(out.unit).toBe("BOXES");
   });
 });
 

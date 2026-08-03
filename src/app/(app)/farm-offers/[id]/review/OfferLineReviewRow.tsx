@@ -126,7 +126,7 @@ export function OfferLineReviewRow({
           defaultValue={line.weightPerBoxKg ?? ""}
         />
         <FormField
-          label="Price per stem"
+          label="FOB price per stem"
           name="fobPricePerStem"
           type="number"
           step="0.0001"

@@ -42,8 +42,10 @@ describe("normalizeBoxTypeForImport", () => {
     expect(normalizeBoxTypeForImport("FB")).toBe("FB");
   });
 
-  it("null/undefined boxType stays unchanged", () => {
-    expect(normalizeBoxTypeForImport(null)).toBeNull();
-    expect(normalizeBoxTypeForImport(undefined)).toBeUndefined();
+  it("missing box type defaults to QB (deterministic Farm Offer default - the application only offers QB today)", () => {
+    expect(normalizeBoxTypeForImport(null)).toBe("QB");
+    expect(normalizeBoxTypeForImport(undefined)).toBe("QB");
+    expect(normalizeBoxTypeForImport("")).toBe("QB");
+    expect(normalizeBoxTypeForImport("   ")).toBe("QB");
   });
 });

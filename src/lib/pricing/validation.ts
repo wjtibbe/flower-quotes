@@ -12,6 +12,10 @@ export function validatePriceLineInput(input: PriceLineInput): ValidationIssue[]
     issues.push({ code: "MISSING_FOB_PRICE", message: "FOB-prijs per steel ontbreekt" });
   } else if (new Decimal(input.fobPricePerStem).isNegative()) {
     issues.push({ code: "NEGATIVE_PRICE", message: "FOB-prijs per steel is negatief" });
+  } else if (new Decimal(input.fobPricePerStem).isZero()) {
+    // FOB price is always mandatory and must be positive - a present-but-zero
+    // value is just as invalid as a missing one, never a silently accepted price.
+    issues.push({ code: "MISSING_FOB_PRICE", message: "FOB-prijs per steel moet groter zijn dan nul" });
   }
 
   if (input.stemsPerBox === undefined || input.stemsPerBox === null) {

@@ -1,4 +1,5 @@
-import { calculateTotalStems } from "./offerLineMapping";
+import { calculateTotalStems, isValidFobPrice } from "./offerLineMapping";
+import { normalizeBoxTypeForImport } from "./offerLineFilters";
 import { parseLengthSpec } from "./rangeExpansion";
 import type { OfferUnitLike, ParsedOfferLine } from "./types";
 
@@ -41,14 +42,16 @@ import type { OfferUnitLike, ParsedOfferLine } from "./types";
  *    defaulting to USD) is trusted configuration and counts as RESOLVED
  *    (see `resolveEffectiveCurrency`) - this replaces the earlier
  *    country-based Colombia/Ecuador inference.
- *  - Quantity/unit: when the parser only ever populated the legacy
- *    `boxesAvailable` field (every current provider), quantity/unit are
- *    backfilled as `{quantity: boxesAvailable, unit: BOXES}` - the exact
- *    same assumption the review screen's own display fallback already made
- *    (see `OfferLineReviewRow.tsx`'s `effectiveQuantity`/`effectiveUnit`),
- *    now applied to the actual data so `totalStems` can be CALCULATED
- *    (`calculateTotalStems`, unchanged) instead of merely
- *    display-approximated.
+ *  - Quantity/unit/box type (deterministic Farm Offer defaults): unit is
+ *    ALWAYS "BOXES" for an imported line - availability is only ever
+ *    administered in boxes in this application. Quantity is the parser's
+ *    explicit value, or the legacy `boxesAvailable` field, or otherwise
+ *    defaults to 1 box (a supplier line with no stated quantity means one
+ *    box - never a review prompt). Box type normalizes HB/missing to QB
+ *    (`normalizeBoxTypeForImport`), overridden by the matched profile's own
+ *    canonical boxType when there is one. FOB price itself is never
+ *    defaulted - it stays mandatory and must be a positive value
+ *    (`isValidFobPrice`).
  */
 
 // ---------------------------------------------------------------------------
@@ -167,20 +170,37 @@ export function resolveEffectiveCurrency({
  * not be derived ... currency is not stated") - every referenced topic must
  * be currently resolved before the whole warning is considered stale.
  */
-export type WarningTopic = "STEMS_PER_BOX" | "BOX_WEIGHT" | "PRICE" | "CURRENCY" | "TOTAL_STEMS";
+export type WarningTopic =
+  | "STEMS_PER_BOX"
+  | "BOX_WEIGHT"
+  | "PRICE"
+  | "CURRENCY"
+  | "TOTAL_STEMS"
+  | "QUANTITY"
+  | "UNIT"
+  | "BOX_TYPE"
+  | "FARM";
 
 // Deliberately broad-but-safe keyword matches per topic (English AI free text
 // and the app's own Dutch canned strings). Safety comes not from narrow
 // regexes but from `resolved.<topic>` only ever being true when that field
 // genuinely IS resolved on the CURRENT effective line - an unrelated warning
 // that happens to mention "prijs" is never dropped unless the price is
-// actually present now.
+// actually present now. QUANTITY/UNIT/BOX_TYPE/FARM exist for the
+// deterministic Farm Offer defaults (quantity, BOXES unit, QB box type, the
+// already-selected supplier) - see `enrichParsedOfferLine` below.
 const TOPIC_PATTERNS: Record<WarningTopic, RegExp> = {
   STEMS_PER_BOX: /stems?\s*(?:per|\/)\s*box/i,
   BOX_WEIGHT: /box\s*weight|weight\s*per\s*box|doosgewicht/i,
   PRICE: /price|prijs/i,
   CURRENCY: /currency|valuta/i,
   TOTAL_STEMS: /total\s*stems|totaal(?:\s+aantal)?\s+stelen/i,
+  // Deliberately NOT a bare "aantal" match - TOTAL_STEMS already owns
+  // "(totaal) aantal stelen" and the two topics must stay independent.
+  QUANTITY: /quantity|hoeveelheid|aantal\s+(?:dozen|boxes)/i,
+  UNIT: /\bunit\b|eenheid/i,
+  BOX_TYPE: /box\s*type|doostype/i,
+  FARM: /farm\s*name|supplier\s*name|leverancier(?:snaam)?/i,
 };
 
 /** Every recognized topic a warning references - empty for an OTHER/unrecognized warning. */
@@ -194,6 +214,14 @@ export interface ResolvedWarningTopics {
   price: boolean;
   currency: boolean;
   totalStems: boolean;
+  /** Deterministic default: an explicit quantity always wins, otherwise 1 box - see `enrichParsedOfferLine`. */
+  quantity: boolean;
+  /** Deterministic default: always BOXES for an imported line. */
+  unit: boolean;
+  /** Deterministic default: HB/missing normalize to QB. */
+  boxType: boolean;
+  /** The Farm/Supplier is selected by the user before import and is authoritative - never re-derived from the source text. */
+  farm: boolean;
 }
 
 const TOPIC_KEY: Record<WarningTopic, keyof ResolvedWarningTopics> = {
@@ -202,6 +230,10 @@ const TOPIC_KEY: Record<WarningTopic, keyof ResolvedWarningTopics> = {
   PRICE: "price",
   CURRENCY: "currency",
   TOTAL_STEMS: "totalStems",
+  QUANTITY: "quantity",
+  UNIT: "unit",
+  BOX_TYPE: "boxType",
+  FARM: "farm",
 };
 
 /**
@@ -249,10 +281,23 @@ export function enrichParsedOfferLine(
 ): ParsedOfferLine {
   let next: ParsedOfferLine = { ...line };
 
-  // Quantity/unit backfill from the legacy boxesAvailable field (see module doc).
-  if (!next.quantity && !next.unit && next.boxesAvailable != null) {
-    next = { ...next, quantity: String(next.boxesAvailable), unit: "BOXES" };
-  }
+  // Deterministic Farm Offer defaults (quantity/unit/box type): the
+  // application only administers availability in QB boxes, so these are
+  // never left for a human to confirm.
+  //  - Quantity: an explicit extracted quantity always wins; the legacy
+  //    `boxesAvailable` field is the next source; otherwise default to 1
+  //    box (a supplier line with no stated quantity means one box - see
+  //    the module doc's originating business rule).
+  //  - Unit: ALWAYS "BOXES" for an imported line, regardless of what (if
+  //    anything) the parser extracted - there is no other supported
+  //    quantity unit for a fresh import today.
+  const resolvedQuantity = next.quantity ?? (next.boxesAvailable != null ? String(next.boxesAvailable) : "1");
+  next = { ...next, quantity: resolvedQuantity, unit: "BOXES" };
+
+  // Box type: HB normalizes to QB, and a missing/blank box type also
+  // defaults to QB (same rule, see offerLineFilters.ts) - overridden below
+  // by the matched profile's own canonical boxType when there is one.
+  next = { ...next, boxType: normalizeBoxTypeForImport(next.boxType) };
 
   // Canonical packaging AND product identity from the matched
   // PackagingWeightProfile - the SAME shared computation every other
@@ -291,14 +336,24 @@ export function enrichParsedOfferLine(
   });
 
   // Warning reconciliation - only for exactly what is resolved right now.
+  // `price` requires a genuinely valid (positive) FOB price, never merely a
+  // present-but-invalid one ("0" is a non-empty string but not a real price -
+  // see `isValidFobPrice`); quantity/unit/boxType are always resolved above
+  // by deterministic default, and `farm` is always resolved because the
+  // Farm/Supplier is selected by the user before import ever runs (never
+  // re-derived from the source text - see the module doc).
   next = {
     ...next,
     parserWarnings: reconcileWarnings(next.parserWarnings, {
       stemsPerBox: next.stemsPerBox != null,
       boxWeight: Boolean(next.weightPerBoxKg),
-      price: Boolean(next.fobPricePerStem),
+      price: isValidFobPrice(next.fobPricePerStem),
       currency: Boolean(next.currency),
       totalStems: totalStems !== null,
+      quantity: true,
+      unit: true,
+      boxType: true,
+      farm: true,
     }),
   };
 
