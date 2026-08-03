@@ -64,34 +64,34 @@ describe("addExchangeRate - EUR is the single base currency", () => {
     );
   });
 
-  it("3: rejects EUR as the target currency", async () => {
+  it("3: rejects EUR as the target currency (via redirect+err, not a raw throw - no error.tsx exists on this route)", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "EUR", rate: "1.17" }))).rejects.toThrow(
-      "Doelvaluta mag niet gelijk zijn aan de basisvaluta (EUR)",
+      "REDIRECT:/exchange-rates?err=",
     );
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown currency code", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "GBP", rate: "1.17" }))).rejects.toThrow(
-      "Ongeldige valutacode",
+      "REDIRECT:/exchange-rates?err=",
     );
   });
 
   it("11: rejects a zero rate", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "0" }))).rejects.toThrow(
-      "Koers moet groter dan nul zijn",
+      "REDIRECT:/exchange-rates?err=",
     );
   });
 
   it("11: rejects a negative rate", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "-1.17" }))).rejects.toThrow(
-      "Koers moet groter dan nul zijn",
+      "REDIRECT:/exchange-rates?err=",
     );
   });
 
   it("rejects a non-numeric rate", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "abc" }))).rejects.toThrow(
-      "Koers moet groter dan nul zijn",
+      "REDIRECT:/exchange-rates?err=",
     );
   });
 });
@@ -118,10 +118,10 @@ describe("editExchangeRate - base and target stay fixed", () => {
     expect(mockUpdate.mock.calls[0][0].data.baseCurrency).toBeUndefined();
   });
 
-  it("10: defensively rejects editing a legacy row that is not EUR-based", async () => {
+  it("10: defensively rejects editing a legacy row that is not EUR-based (via redirect+err, not a raw throw)", async () => {
     mockFindUniqueOrThrow.mockResolvedValue({ id: "rate-legacy", baseCurrency: "USD", quoteCurrency: "EUR" });
     await expect(editExchangeRate("rate-legacy", formData({ rate: "1.20" }))).rejects.toThrow(
-      "niet EUR-gebaseerd",
+      "REDIRECT:/exchange-rates?err=",
     );
     expect(mockUpdate).not.toHaveBeenCalled();
   });
@@ -129,7 +129,7 @@ describe("editExchangeRate - base and target stay fixed", () => {
   it("11: rejects a zero/negative rate on edit", async () => {
     mockFindUniqueOrThrow.mockResolvedValue({ id: "rate-1", baseCurrency: "EUR", quoteCurrency: "USD" });
     await expect(editExchangeRate("rate-1", formData({ rate: "0" }))).rejects.toThrow(
-      "Koers moet groter dan nul zijn",
+      "REDIRECT:/exchange-rates?err=",
     );
   });
 });

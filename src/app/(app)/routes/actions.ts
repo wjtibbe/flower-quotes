@@ -15,7 +15,10 @@ function norm(v: FormDataEntryValue | null): string | null {
 export async function createOrigin(formData: FormData): Promise<void> {
   const city = norm(formData.get("city"));
   const country = norm(formData.get("country"));
-  if (!city || !country) throw new Error("Stad en land zijn verplicht");
+  if (!city || !country) {
+    redirect(`/routes?err=${encodeURIComponent("Stad en land zijn verplicht")}`);
+    return;
+  }
 
   const existing = await prisma.origin.findFirst({
     where: { city: { equals: city, mode: "insensitive" }, country: { equals: country, mode: "insensitive" } },
@@ -33,7 +36,10 @@ export async function createOrigin(formData: FormData): Promise<void> {
 export async function createDestination(formData: FormData): Promise<void> {
   const city = norm(formData.get("city"));
   const country = norm(formData.get("country"));
-  if (!city || !country) throw new Error("Stad en land zijn verplicht");
+  if (!city || !country) {
+    redirect(`/routes?err=${encodeURIComponent("Stad en land zijn verplicht")}`);
+    return;
+  }
 
   const existing = await prisma.destination.findFirst({
     where: { city: { equals: city, mode: "insensitive" }, country: { equals: country, mode: "insensitive" } },
@@ -52,7 +58,10 @@ export async function createRoute(formData: FormData): Promise<void> {
   const originId = norm(formData.get("originId"));
   const destinationId = norm(formData.get("destinationId"));
   const transportType = (norm(formData.get("transportType")) ?? "AIR") as TransportType;
-  if (!originId || !destinationId) throw new Error("Vertrekpunt en bestemming zijn verplicht");
+  if (!originId || !destinationId) {
+    redirect(`/routes?err=${encodeURIComponent("Vertrekpunt en bestemming zijn verplicht")}`);
+    return;
+  }
 
   const existing = await prisma.route.findFirst({ where: { originId, destinationId, transportType } });
   if (existing) redirect("/routes?msg=route-exists");
@@ -74,7 +83,10 @@ export async function addFreightRate(routeId: string, formData: FormData): Promi
   const rateUnit = (norm(formData.get("rateUnit")) ?? "PER_KG") as FreightRateUnit;
   const effectiveFromRaw = norm(formData.get("effectiveFrom"));
   const effectiveToRaw = norm(formData.get("effectiveTo"));
-  if (!amount) throw new Error("Tarief is verplicht");
+  if (!amount) {
+    redirect(`/routes?err=${encodeURIComponent("Tarief is verplicht")}`);
+    return;
+  }
 
   await prisma.freightRate.create({
     data: {

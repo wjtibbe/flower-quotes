@@ -23,7 +23,10 @@ export async function saveFarm(formData: FormData): Promise<void> {
     originId: (formData.get("originId") as string) || null,
     notes: (formData.get("notes") as string) || null,
   };
-  if (!data.name || !data.country) throw new Error("Naam en land zijn verplicht");
+  if (!data.name || !data.country) {
+    redirect(`/farms?err=${encodeURIComponent("Naam en land zijn verplicht")}`);
+    return;
+  }
 
   if (id) {
     await prisma.farm.update({ where: { id }, data });

@@ -16,13 +16,18 @@ async function currentUserId(): Promise<string | null> {
 /**
  * EUR is the single base currency for manually maintained exchange rates
  * (see src/lib/exchangeRate.ts) - every stored row is "1 EUR = rate target".
+ * Returns a Dutch error message, or null when the input is valid - never
+ * throws, so a validation failure redirects with a friendly `?err=` message
+ * (see addExchangeRate/editExchangeRate) instead of crashing the page (no
+ * error.tsx boundary exists on this route).
  */
-function validateTargetAndRate(quoteCurrency: string, rateRaw: string): void {
-  if (!quoteCurrency || !rateRaw) throw new Error("Alle velden zijn verplicht");
-  if (!(quoteCurrency in Currency)) throw new Error("Ongeldige valutacode");
-  if (quoteCurrency === BASE_CURRENCY) throw new Error("Doelvaluta mag niet gelijk zijn aan de basisvaluta (EUR)");
+function validateTargetAndRate(quoteCurrency: string, rateRaw: string): string | null {
+  if (!quoteCurrency || !rateRaw) return "Alle velden zijn verplicht";
+  if (!(quoteCurrency in Currency)) return "Ongeldige valutacode";
+  if (quoteCurrency === BASE_CURRENCY) return "Doelvaluta mag niet gelijk zijn aan de basisvaluta (EUR)";
   const rate = Number(rateRaw);
-  if (!Number.isFinite(rate) || rate <= 0) throw new Error("Koers moet groter dan nul zijn");
+  if (!Number.isFinite(rate) || rate <= 0) return "Koers moet groter dan nul zijn";
+  return null;
 }
 
 /**
@@ -36,7 +41,8 @@ export async function addExchangeRate(formData: FormData): Promise<void> {
   const quoteCurrency = String(formData.get("quoteCurrency") ?? "");
   const rate = String(formData.get("rate") ?? "").trim();
   const notes = (formData.get("notes") as string)?.trim() || null;
-  validateTargetAndRate(quoteCurrency, rate);
+  const validationError = validateTargetAndRate(quoteCurrency, rate);
+  if (validationError) redirect(`/exchange-rates?err=${encodeURIComponent(validationError)}`);
 
   const updatedById = await currentUserId();
   await prisma.$transaction([
@@ -61,11 +67,12 @@ export async function editExchangeRate(id: string, formData: FormData): Promise<
   const existing = await prisma.exchangeRate.findUniqueOrThrow({ where: { id } });
   if (existing.baseCurrency !== BASE_CURRENCY) {
     // Defensive: unreachable once the EUR-base data migration has run.
-    throw new Error("Deze koers is niet EUR-gebaseerd en kan niet via dit formulier worden bewerkt");
+    redirect(`/exchange-rates?err=${encodeURIComponent("Deze koers is niet EUR-gebaseerd en kan niet via dit formulier worden bewerkt")}`);
   }
   const rate = String(formData.get("rate") ?? "").trim();
   const notes = (formData.get("notes") as string)?.trim() || null;
-  validateTargetAndRate(existing.quoteCurrency, rate);
+  const validationError = validateTargetAndRate(existing.quoteCurrency, rate);
+  if (validationError) redirect(`/exchange-rates?err=${encodeURIComponent(validationError)}`);
 
   const updatedById = await currentUserId();
   await prisma.exchangeRate.update({ where: { id }, data: { rate, notes, updatedById } });

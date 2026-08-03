@@ -17,6 +17,7 @@ interface Params {
   quote?: string;
   edit?: string;
   msg?: string;
+  err?: string;
 }
 
 const MESSAGES: Record<string, { text: string; ok: boolean }> = {
@@ -62,6 +63,9 @@ export default async function ExchangeRatesPage({ searchParams }: { searchParams
         <div className={`card p-3 text-sm ${msg.ok ? "bg-green-50 border-green-200 text-green-800" : "bg-amber-50 border-amber-200 text-amber-800"}`}>
           {msg.text}
         </div>
+      )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
       )}
 
       <form className="card p-4 flex flex-wrap gap-3 items-end">

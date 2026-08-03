@@ -22,7 +22,10 @@ function norm(v: FormDataEntryValue | null): string | null {
 export async function saveCustomer(formData: FormData): Promise<void> {
   const id = norm(formData.get("id"));
   const companyName = norm(formData.get("companyName"));
-  if (!companyName) throw new Error("Bedrijfsnaam is verplicht");
+  if (!companyName) {
+    redirect(`/customers?err=${encodeURIComponent("Bedrijfsnaam is verplicht")}`);
+    return;
+  }
 
   const data = {
     companyName,
@@ -41,7 +44,10 @@ export async function saveCustomer(formData: FormData): Promise<void> {
     await prisma.customer.update({ where: { id }, data });
   } else {
     const destinationId = norm(formData.get("destinationId"));
-    if (!destinationId) throw new Error("Standaard leverbestemming is verplicht voor een nieuwe klant");
+    if (!destinationId) {
+      redirect(`/customers?err=${encodeURIComponent("Standaard leverbestemming is verplicht voor een nieuwe klant")}`);
+      return;
+    }
 
     await prisma.$transaction(async (tx) => {
       const customer = await tx.customer.create({ data: { ...data, destinationId } });
@@ -80,7 +86,10 @@ export async function deleteCustomer(id: string): Promise<void> {
  */
 export async function addCustomerDestination(customerId: string, formData: FormData): Promise<void> {
   const destinationId = norm(formData.get("destinationId"));
-  if (!destinationId) throw new Error("Bestemming is verplicht");
+  if (!destinationId) {
+    redirect(`/customers?err=${encodeURIComponent("Bestemming is verplicht")}`);
+    return;
+  }
 
   const existing = await prisma.customerDestination.findUnique({
     where: { customerId_destinationId: { customerId, destinationId } },
@@ -111,7 +120,10 @@ export async function addCustomerDestination(customerId: string, formData: FormD
  */
 export async function setDefaultCustomerDestination(customerId: string, customerDestinationId: string): Promise<void> {
   const link = await prisma.customerDestination.findUniqueOrThrow({ where: { id: customerDestinationId } });
-  if (link.customerId !== customerId) throw new Error("Bestemming hoort niet bij deze klant");
+  if (link.customerId !== customerId) {
+    redirect(`/customers?err=${encodeURIComponent("Bestemming hoort niet bij deze klant")}`);
+    return;
+  }
 
   await prisma.$transaction([
     prisma.customerDestination.updateMany({ where: { customerId, isDefault: true }, data: { isDefault: false } }),

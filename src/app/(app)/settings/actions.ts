@@ -15,11 +15,17 @@ export async function addUser(formData: FormData): Promise<void> {
   const role = String(formData.get("role") ?? "SALES") as UserRole;
 
   if (!name || !email || password.length < 8) {
-    throw new Error("Naam, e-mail en een wachtwoord van minimaal 8 tekens zijn verplicht");
+    redirect(`/settings?err=${encodeURIComponent("Naam, e-mail en een wachtwoord van minimaal 8 tekens zijn verplicht")}`);
+    return;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
-  await prisma.user.create({ data: { name, email, passwordHash, role } });
+  try {
+    await prisma.user.create({ data: { name, email, passwordHash, role } });
+  } catch {
+    // Unique constraint on email is the only realistic failure here.
+    redirect(`/settings?err=${encodeURIComponent(`Er bestaat al een gebruiker met e-mailadres "${email}".`)}`);
+  }
   revalidatePath("/settings");
 }
 

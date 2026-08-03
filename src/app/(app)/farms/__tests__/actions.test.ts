@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-vi.mock("next/navigation", () => ({ redirect: vi.fn() }));
+const mockRedirect = vi.fn((url: string) => {
+  throw new Error(`REDIRECT:${url}`);
+});
+vi.mock("next/navigation", () => ({ redirect: (url: string) => mockRedirect(url) }));
 
 const mockFarmCreate = vi.fn();
 const mockFarmUpdate = vi.fn();
@@ -56,5 +59,27 @@ describe("saveFarm - supplier default currency", () => {
     expect(mockFarmCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ defaultCurrency: "USD" }) }),
     );
+  });
+});
+
+describe("saveFarm - required field validation (regression: whitespace-only name/country used to throw an uncaught error, crashing the page with a 500 instead of the friendly /farms?err= banner)", () => {
+  it("rejects a whitespace-only name via the redirect+err pattern instead of throwing", async () => {
+    await expect(saveFarm(formData({ name: "   ", country: "Ecuador" }))).rejects.toThrow(
+      "REDIRECT:/farms?err=",
+    );
+    expect(mockFarmCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a whitespace-only country via the redirect+err pattern instead of throwing", async () => {
+    await expect(saveFarm(formData({ name: "New Farm", country: "   " }))).rejects.toThrow(
+      "REDIRECT:/farms?err=",
+    );
+    expect(mockFarmCreate).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing name/country the same way", async () => {
+    await expect(saveFarm(formData({}))).rejects.toThrow("REDIRECT:/farms?err=");
+    expect(mockFarmCreate).not.toHaveBeenCalled();
+    expect(mockFarmUpdate).not.toHaveBeenCalled();
   });
 });
