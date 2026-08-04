@@ -5,7 +5,15 @@ import { extractCsvTables } from "./extract/csv";
 import { extractEmailText } from "./extract/emailText";
 import { resolveImageMediaType, resolveExcelFileKind } from "./extract/detectFileType";
 import { parseExcelTable } from "./excelParser";
-import { detectTableRegion, buildTabularText } from "./excelTableAdapter";
+import { detectTableRegion, buildTabularText, type DetectedTableRegion } from "./excelTableAdapter";
+import {
+  detectDeterministicColumns,
+  hasSufficientDeterministicCoverage,
+  extractDeterministicRows,
+  buildDescriptionListText,
+  mergeDeterministicRowsWithDescriptionLines,
+  type DeterministicField,
+} from "./excelDeterministicMapper";
 import { getImportParserProvider, AnthropicNoLinesDetectedError } from "./provider";
 import { chunkTextSupplierOffer, type TextChunk } from "./textChunking";
 import { applyLengthRangeExpansion, parseSharedPriceTable } from "./rangeExpansion";
@@ -136,55 +144,146 @@ async function runExcelImport(
  * Excel/CSV offer lines are always interpreted by the same AI provider every
  * other source uses (section: "de app is bewust gekoppeld aan de
  * Anthropic-provider") - this function never builds a `ParsedOfferLine`
- * itself. For each sheet it first locates the real offer table (preferring
- * an Excel-defined Table, then a generic header scan, then the older
- * exact-match dictionary - see `excelTableAdapter.ts`) so a title row and
- * blank rows above the header never reach the model as if they were data,
- * then converts that region to clean, deterministic pipe-delimited text and
- * routes it through `runTextImportSource` (the same entry point PDFs/emails
- * use). A sheet with no detected table region falls back to a raw flatten of
- * every one of its rows, exactly like before, so a genuinely unstructured
- * sheet still gets *something* in front of the model instead of being
- * silently dropped.
+ * itself for a column whose meaning the AI has to guess. For each sheet it
+ * first locates the real offer table (preferring an Excel-defined Table,
+ * then a generic header scan, then the older exact-match dictionary - see
+ * `excelTableAdapter.ts`) so a title row and blank rows above the header
+ * never reach the model as if they were data.
+ *
+ * When that header row matches enough of the KNOWN, exact supplier headers
+ * (`excelDeterministicMapper.ts` - "Pack quantity", "Stems per bunch", "Fust
+ * code", ...), column meaning is no longer inferred at all: every
+ * numeric/structural field is read directly from its named column
+ * deterministically, and Claude receives ONLY the free-text product
+ * descriptions (never the ambiguous numeric columns) to recognize product/
+ * variety from - it is structurally impossible for the model to decide which
+ * column is stemsPerBox vs stemsPerBunch when it never sees either number.
+ * A sheet whose header doesn't match this known dictionary falls back to the
+ * general path: clean pipe-delimited text (still headers + rows only, never
+ * the raw sheet) routed through `runTextImportSource`, same as any other
+ * text source. A sheet with no detected table region at all falls back to a
+ * raw flatten of every row, so a genuinely unstructured sheet still gets
+ * *something* in front of the model instead of being silently dropped.
  *
  * The older direct column-mapper (`parseExcelTable`) is kept only as a
- * last-resort, deterministic safety net for when the AI pipeline itself
- * comes back with nothing (no `ANTHROPIC_API_KEY` configured and the
- * rule-based text provider's WhatsApp-oriented recognizer can't cope with a
- * plain numeric spreadsheet) - never as the primary path, and never
- * bypassing the AI provider when it IS available.
+ * last-resort, deterministic safety net for when NEITHER of the above paths
+ * produces anything (no `ANTHROPIC_API_KEY` configured and the rule-based
+ * text provider's WhatsApp-oriented recognizer can't cope with a plain
+ * numeric spreadsheet) - never as the primary path.
  */
 async function runExcelSheetsThroughImportPipeline(
   sheets: ExcelSheetExtraction[],
   context: ImportContext,
 ): Promise<ImportResult> {
-  const sheetTexts = sheets.map((sheet) => {
-    const region = detectTableRegion(sheet.table, sheet.definedTables);
-    if (region) {
-      return buildTabularText(sheet.table, region);
-    }
-    // No detected table region for this sheet - fall back to a raw flatten
-    // of every row (previous behavior), rather than dropping the sheet.
-    return sheet.table.map((row) => row.map((c) => String(c ?? "")).join(" ")).join("\n");
-  });
-  const combinedText = sheetTexts.filter((t) => t.trim().length > 0).join("\n\n");
+  const deterministicLines: ParsedOfferLine[] = [];
+  const deterministicRawTextParts: string[] = [];
+  const nonDeterministicSheetTexts: string[] = [];
 
-  const aiResult = await runTextImportSource(combinedText, "EXCEL", (t) => t, context);
-  if (!aiResult.fatalError && aiResult.lines.length > 0) {
-    return aiResult;
+  for (const sheet of sheets) {
+    const region = detectTableRegion(sheet.table, sheet.definedTables);
+    if (!region) {
+      nonDeterministicSheetTexts.push(sheet.table.map((row) => row.map((c) => String(c ?? "")).join(" ")).join("\n"));
+      continue;
+    }
+
+    const columns = detectDeterministicColumns(sheet.table[region.headerRowIndex] ?? []);
+    if (hasSufficientDeterministicCoverage(columns)) {
+      deterministicLines.push(...(await runDeterministicExcelSheet(sheet, region, columns, context)));
+      deterministicRawTextParts.push(buildTabularText(sheet.table, region));
+      continue;
+    }
+
+    nonDeterministicSheetTexts.push(buildTabularText(sheet.table, region));
+  }
+
+  const combinedText = nonDeterministicSheetTexts.filter((t) => t.trim().length > 0).join("\n\n");
+  const aiResult = combinedText.trim().length > 0 ? await runTextImportSource(combinedText, "EXCEL", (t) => t, context) : null;
+  const aiLines = aiResult && !aiResult.fatalError ? aiResult.lines : [];
+  const combinedRawText = [...deterministicRawTextParts, combinedText].filter((t) => t.trim().length > 0).join("\n\n");
+  const allLines = [...deterministicLines, ...aiLines];
+
+  if (allLines.length > 0) {
+    return { sourceKind: "EXCEL", rawText: combinedRawText, lines: allLines };
   }
 
   // Last-resort deterministic fallback (see doc comment above): only reached
-  // when the AI pipeline itself found nothing usable.
+  // when neither the deterministic-mapping path nor the AI pipeline
+  // produced anything usable.
   const fallbackLines: ParsedOfferLine[] = [];
   for (const sheet of sheets) {
     fallbackLines.push(...parseExcelTable(sheet.table));
   }
   if (fallbackLines.length > 0) {
-    return { sourceKind: "EXCEL", rawText: combinedText, lines: fallbackLines };
+    return { sourceKind: "EXCEL", rawText: combinedRawText, lines: fallbackLines };
   }
 
-  return aiResult;
+  return (
+    aiResult ?? {
+      sourceKind: "EXCEL",
+      rawText: combinedRawText,
+      lines: [],
+      fatalError:
+        "Er zijn geen herkenbare aanbiedingsregels gevonden in dit Excel-bestand. Controleer de inhoud of voeg de regels handmatig toe.",
+    }
+  );
+}
+
+// Deliberately NOT routed through `runTextImportSource`/`chunkTextSupplierOffer`:
+// that chunker decides batch boundaries by looking for numeric "product
+// signals" (a cm length, a price, a QB/HB/FB code) in each line - exactly the
+// columns this deterministic path strips out before the text ever reaches the
+// model. Without a numeric signal, a large description-only list would be
+// misclassified as pure "context" and sent as a single oversized call, whose
+// *output* (the model still has to fill the full per-line schema even to say
+// productGroup/variety) can truncate at the token limit even though the
+// *input* itself is small - the exact failure mode this fixed-size batching
+// avoids by construction. Same proven batch size as the general chunker's own
+// default (`DEFAULT_TARGET_PRODUCT_ROWS` in textChunking.ts).
+const DESCRIPTION_BATCH_SIZE = 22;
+
+/**
+ * Runs one sheet through the deterministic-header path: every
+ * numeric/structural field is read straight from its named column
+ * (`extractDeterministicRows`, never via AI); only the free-text product
+ * descriptions are sent to the provider, in small fixed-size batches, asking
+ * it for product/variety recognition alone. Results are merged back by a
+ * stable row-index tag, never by array position (`mergeDeterministicRowsWithDescriptionLines`).
+ * A single bad batch (or a total AI outage) never blocks the deterministic
+ * numeric data or fails the whole sheet - a row the AI couldn't be matched
+ * back to still gets a real (flagged-for-review) line.
+ */
+async function runDeterministicExcelSheet(
+  sheet: ExcelSheetExtraction,
+  region: DetectedTableRegion,
+  columns: Partial<Record<DeterministicField, number>>,
+  context: ImportContext,
+): Promise<ParsedOfferLine[]> {
+  const rows = extractDeterministicRows(sheet.table, region, columns);
+  if (rows.length === 0) return [];
+
+  const provider = getImportParserProvider();
+  const descriptionLines: ParsedOfferLine[] = [];
+
+  for (let i = 0; i < rows.length; i += DESCRIPTION_BATCH_SIZE) {
+    const batch = rows.slice(i, i + DESCRIPTION_BATCH_SIZE);
+    try {
+      const batchLines = await provider.parseOfferSource({ kind: "text", text: buildDescriptionListText(batch) }, context);
+      descriptionLines.push(...batchLines);
+    } catch (err) {
+      if (err instanceof AnthropicNoLinesDetectedError) continue;
+      // Any other batch failure (transport, truncation, no API key, ...): the
+      // rows in THIS batch simply get no AI-matched product/variety - the
+      // merge step below still turns each into a real, review-flagged line
+      // from its own raw description, never losing the deterministic fields.
+      console.warn("[import:excel-deterministic] description batch failed", {
+        batchIndex: Math.floor(i / DESCRIPTION_BATCH_SIZE),
+        batchSize: batch.length,
+        errorName: err instanceof Error ? err.name : typeof err,
+      });
+    }
+  }
+
+  return mergeDeterministicRowsWithDescriptionLines(rows, descriptionLines);
 }
 
 async function runPdfImport(buffer: Buffer, context: ImportContext): Promise<ImportResult> {

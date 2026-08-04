@@ -103,6 +103,7 @@ export function buildExtractedSnapshot(line: ParsedOfferLine): JsonSerializable 
     quantity: line.quantity ?? null,
     unit: line.unit ?? null,
     stemsPerBox: line.stemsPerBox ?? null,
+    stemsPerBunch: line.stemsPerBunch ?? null,
     boxType: line.boxType ?? null,
     boxWeight: line.weightPerBoxKg ?? null,
     price: line.fobPricePerStem ?? null,

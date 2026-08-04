@@ -9,6 +9,12 @@ describe("isIgnoredBoxType", () => {
     expect(isIgnoredBoxType(" hB ")).toBe(true);
   });
 
+  it("is case-insensitive and trimmed for QBE (real supplier fust code seen in Nikita's sheet)", () => {
+    expect(isIgnoredBoxType("QBE")).toBe(true);
+    expect(isIgnoredBoxType("qbe")).toBe(true);
+    expect(isIgnoredBoxType(" QBE ")).toBe(true);
+  });
+
   it("is false for QB and other box types", () => {
     expect(isIgnoredBoxType("QB")).toBe(false);
     expect(isIgnoredBoxType("FB")).toBe(false);
@@ -40,6 +46,11 @@ describe("normalizeBoxTypeForImport", () => {
 
   it("other box types stay unchanged", () => {
     expect(normalizeBoxTypeForImport("FB")).toBe("FB");
+  });
+
+  it("QBE -> QB (real supplier fust code, e.g. Nikita's sheet)", () => {
+    expect(normalizeBoxTypeForImport("QBE")).toBe("QB");
+    expect(normalizeBoxTypeForImport(" qbe ")).toBe("QB");
   });
 
   it("missing box type defaults to QB (deterministic Farm Offer default - the application only offers QB today)", () => {

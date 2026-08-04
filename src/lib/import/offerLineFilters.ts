@@ -1,19 +1,22 @@
 /**
  * Temporary, global business rule: "we only offer QB for now" - HB (Half
- * Box) is normalized to QB for a NEW import's persisted/matched box type,
- * and a missing/unstated box type defaults to QB too (deterministic Farm
- * Offer defaults: the application currently works only with QB, so there is
- * nothing to guess or ask a reviewer to confirm). The line itself is NEVER
- * dropped; only its CURRENT `boxType` is normalized (see
- * `mapParsedOfferLineToCreateInput` in offerLineMapping.ts, the only place
- * this is applied). The ORIGINAL supplier value is always preserved
- * verbatim in `rawText` and `extractedSnapshot` for audit.
+ * Box) and QBE (a supplier-specific "QB" variant/fust code seen in real
+ * source files, e.g. Nikita's "Fust code" column) are both normalized to QB
+ * for a NEW import's persisted/matched box type, and a missing/unstated box
+ * type defaults to QB too (deterministic Farm Offer defaults: the
+ * application currently works only with QB, so there is nothing to guess or
+ * ask a reviewer to confirm). The line itself is NEVER dropped; only its
+ * CURRENT `boxType` is normalized (see `mapParsedOfferLineToCreateInput` in
+ * offerLineMapping.ts, the only place this is applied). The ORIGINAL
+ * supplier value is always preserved verbatim in `rawText` and
+ * `extractedSnapshot` for audit.
  */
 
-/** Case-insensitive, trimmed check for the box type this temporary rule normalizes. */
+/** Case-insensitive, trimmed check for a box type this temporary rule normalizes (HB, QBE). */
 export function isIgnoredBoxType(boxType: string | null | undefined): boolean {
   if (!boxType) return false;
-  return boxType.trim().toUpperCase() === "HB";
+  const normalized = boxType.trim().toUpperCase();
+  return normalized === "HB" || normalized === "QBE";
 }
 
 /**

@@ -77,6 +77,17 @@ export interface ParsedOfferLine {
   boxesAvailable?: number;
   stemsPerBox?: number;
   /**
+   * Stems per bunch, as distinct from `stemsPerBox` (a bunch is a smaller
+   * sub-grouping within a box - see `calculateTotalStems`'s own doc comment
+   * in offerLineMapping.ts). Transient parser metadata like `lengthRaw`:
+   * there is no `FarmOfferLine` column for it yet, so it never reaches
+   * Prisma directly - only `buildExtractedSnapshot` keeps it, for audit.
+   * Populated deterministically by the Excel "Stems per bunch" header
+   * mapping (`excelDeterministicMapper.ts`) when that column is present;
+   * no current provider infers it from free text.
+   */
+  stemsPerBunch?: number;
+  /**
    * Generic quantity + unit (preferred over `boxesAvailable` for new
    * imports, section 3 of "invoerzijde verbeteren"). `quantity` is a decimal
    * string, never a float, matching `fobPricePerStem`/`weightPerBoxKg` below
