@@ -1,8 +1,21 @@
 import ExcelJS from "exceljs";
 import type { SheetTable } from "../excelParser";
 
-/** Reads every worksheet of an .xlsx/.xls/.csv file into plain row/column arrays. */
-export async function extractExcelTables(buffer: Buffer): Promise<{ sheetName: string; table: SheetTable }[]> {
+/** One Excel-defined Table (ListObject), e.g. `OffersTable` spanning `A4:H153` - `ref` is the raw range string exactly as ExcelJS reports it. */
+export interface ExcelDefinedTable {
+  name: string;
+  ref: string;
+}
+
+export interface ExcelSheetExtraction {
+  sheetName: string;
+  table: SheetTable;
+  /** Excel Tables (ListObjects) defined on this sheet, if any - see `excelTableAdapter.ts`. */
+  definedTables: ExcelDefinedTable[];
+}
+
+/** Reads every worksheet of an .xlsx/.xls/.csv file into plain row/column arrays, plus any Excel-defined Tables on each sheet. */
+export async function extractExcelTables(buffer: Buffer): Promise<ExcelSheetExtraction[]> {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
 
@@ -13,7 +26,21 @@ export async function extractExcelTables(buffer: Buffer): Promise<{ sheetName: s
       // ExcelJS row.values is 1-indexed with a leading empty slot - drop it.
       table.push(values.slice(1).map(cellToPrimitive));
     });
-    return { sheetName: sheet.name, table };
+
+    // `worksheet.tables` is ExcelJS's own map of defined Table (ListObject)
+    // name -> internal Table model, whose `table.tableRef` is the range
+    // string (e.g. "A4:H153"). Read defensively: this is undocumented
+    // internal shape, not a typed public API on the installed ExcelJS version.
+    const definedTables: ExcelDefinedTable[] = Object.entries(
+      (sheet as unknown as { tables?: Record<string, unknown> }).tables ?? {},
+    )
+      .map(([name, value]) => {
+        const ref = (value as { table?: { tableRef?: unknown } } | null)?.table?.tableRef;
+        return typeof ref === "string" ? { name, ref } : null;
+      })
+      .filter((t): t is ExcelDefinedTable => t !== null);
+
+    return { sheetName: sheet.name, table, definedTables };
   });
 }
 

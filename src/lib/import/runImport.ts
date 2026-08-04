@@ -1,10 +1,11 @@
 import type { ImportContext, ImportParserProvider, ImportResult, ParsedOfferLine, SourceFileKind } from "./types";
 import { extractPdfText, isPdfTextUseful } from "./extract/pdfText";
-import { extractExcelTables } from "./extract/excelTable";
+import { extractExcelTables, type ExcelSheetExtraction } from "./extract/excelTable";
 import { extractCsvTables } from "./extract/csv";
 import { extractEmailText } from "./extract/emailText";
 import { resolveImageMediaType, resolveExcelFileKind } from "./extract/detectFileType";
 import { parseExcelTable } from "./excelParser";
+import { detectTableRegion, buildTabularText } from "./excelTableAdapter";
 import { getImportParserProvider, AnthropicNoLinesDetectedError } from "./provider";
 import { chunkTextSupplierOffer, type TextChunk } from "./textChunking";
 import { applyLengthRangeExpansion, parseSharedPriceTable } from "./rangeExpansion";
@@ -115,28 +116,8 @@ async function runExcelImport(
   }
 
   try {
-    const sheets = kind === "csv" ? await extractCsvTables(buffer) : await extractExcelTables(buffer);
-    const lines: ParsedOfferLine[] = [];
-    for (const sheet of sheets) {
-      lines.push(...parseExcelTable(sheet.table));
-    }
-
-    if (lines.length === 0) {
-      // No recognizable header/columns - fall back to flattening cells to text
-      // and running them through the general text parser, per section 24
-      // (Excel/CSV first tries direct columns, then the general parser as a
-      // fallback) - this also now correctly reports a fatalError instead of a
-      // silent empty result if that fallback also finds nothing (see
-      // `runTextImportSource`).
-      const flattened = sheets
-        .flatMap((s) => s.table)
-        .map((row) => row.map((c) => String(c ?? "")).join(" "))
-        .join("\n");
-      return runTextImportSource(flattened, "EXCEL", (t) => t, context);
-    }
-
-    const rawText = sheets.map((s) => s.table.map((r) => r.join(" ")).join("\n")).join("\n\n");
-    return { sourceKind: "EXCEL", rawText, lines };
+    const sheets: ExcelSheetExtraction[] = kind === "csv" ? await extractCsvTables(buffer) : await extractExcelTables(buffer);
+    return await runExcelSheetsThroughImportPipeline(sheets, context);
   } catch (err) {
     const label = kind === "csv" ? "CSV" : "Excel";
     return {
@@ -149,6 +130,61 @@ async function runExcelImport(
           : `Kon het ${label}-bestand niet lezen door een onbekende fout.`,
     };
   }
+}
+
+/**
+ * Excel/CSV offer lines are always interpreted by the same AI provider every
+ * other source uses (section: "de app is bewust gekoppeld aan de
+ * Anthropic-provider") - this function never builds a `ParsedOfferLine`
+ * itself. For each sheet it first locates the real offer table (preferring
+ * an Excel-defined Table, then a generic header scan, then the older
+ * exact-match dictionary - see `excelTableAdapter.ts`) so a title row and
+ * blank rows above the header never reach the model as if they were data,
+ * then converts that region to clean, deterministic pipe-delimited text and
+ * routes it through `runTextImportSource` (the same entry point PDFs/emails
+ * use). A sheet with no detected table region falls back to a raw flatten of
+ * every one of its rows, exactly like before, so a genuinely unstructured
+ * sheet still gets *something* in front of the model instead of being
+ * silently dropped.
+ *
+ * The older direct column-mapper (`parseExcelTable`) is kept only as a
+ * last-resort, deterministic safety net for when the AI pipeline itself
+ * comes back with nothing (no `ANTHROPIC_API_KEY` configured and the
+ * rule-based text provider's WhatsApp-oriented recognizer can't cope with a
+ * plain numeric spreadsheet) - never as the primary path, and never
+ * bypassing the AI provider when it IS available.
+ */
+async function runExcelSheetsThroughImportPipeline(
+  sheets: ExcelSheetExtraction[],
+  context: ImportContext,
+): Promise<ImportResult> {
+  const sheetTexts = sheets.map((sheet) => {
+    const region = detectTableRegion(sheet.table, sheet.definedTables);
+    if (region) {
+      return buildTabularText(sheet.table, region);
+    }
+    // No detected table region for this sheet - fall back to a raw flatten
+    // of every row (previous behavior), rather than dropping the sheet.
+    return sheet.table.map((row) => row.map((c) => String(c ?? "")).join(" ")).join("\n");
+  });
+  const combinedText = sheetTexts.filter((t) => t.trim().length > 0).join("\n\n");
+
+  const aiResult = await runTextImportSource(combinedText, "EXCEL", (t) => t, context);
+  if (!aiResult.fatalError && aiResult.lines.length > 0) {
+    return aiResult;
+  }
+
+  // Last-resort deterministic fallback (see doc comment above): only reached
+  // when the AI pipeline itself found nothing usable.
+  const fallbackLines: ParsedOfferLine[] = [];
+  for (const sheet of sheets) {
+    fallbackLines.push(...parseExcelTable(sheet.table));
+  }
+  if (fallbackLines.length > 0) {
+    return { sourceKind: "EXCEL", rawText: combinedText, lines: fallbackLines };
+  }
+
+  return aiResult;
 }
 
 async function runPdfImport(buffer: Buffer, context: ImportContext): Promise<ImportResult> {

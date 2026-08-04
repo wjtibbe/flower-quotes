@@ -1,7 +1,7 @@
 import ExcelJS from "exceljs";
 import { Readable } from "node:stream";
 import type { SheetTable } from "../excelParser";
-import { cellToPrimitive } from "./excelTable";
+import { cellToPrimitive, type ExcelSheetExtraction } from "./excelTable";
 
 /**
  * Counts occurrences of `delimiter` in `line`, ignoring anything inside a
@@ -55,7 +55,7 @@ export function detectCsvDelimiter(text: string): "," | ";" {
  * delimiter. The delimiter itself is detected once per file via
  * `detectCsvDelimiter`, then applied consistently to every row.
  */
-export async function extractCsvTables(buffer: Buffer): Promise<{ sheetName: string; table: SheetTable }[]> {
+export async function extractCsvTables(buffer: Buffer): Promise<ExcelSheetExtraction[]> {
   const delimiter = detectCsvDelimiter(buffer.toString("utf-8"));
 
   const workbook = new ExcelJS.Workbook();
@@ -68,5 +68,6 @@ export async function extractCsvTables(buffer: Buffer): Promise<{ sheetName: str
     table.push(values.slice(1).map(cellToPrimitive));
   });
 
-  return [{ sheetName: "CSV", table }];
+  // A CSV has no Excel-defined Table (ListObject) concept - always empty.
+  return [{ sheetName: "CSV", table, definedTables: [] }];
 }
