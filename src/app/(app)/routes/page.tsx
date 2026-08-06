@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { prisma } from "@/lib/db";
-import { fmtMoney, fmtDate } from "@/lib/format";
+import { fmtMoney } from "@/lib/format";
 import ConfirmButton from "@/components/ConfirmButton";
 import {
   COST_CATEGORY_LABELS,
@@ -12,8 +12,7 @@ import {
   createOrigin,
   createDestination,
   createRoute,
-  addFreightRate,
-  deleteFreightRate,
+  saveFreightRate,
   deleteRoute,
   toggleRouteSupportsCfr,
   toggleRouteSupportsDdp,
@@ -34,20 +33,6 @@ const TRANSPORT_LABELS: Record<string, string> = {
 // (adds FLAT) - one shared Dutch label map, see additionalCostTypes.ts.
 const UNIT_LABELS: Record<string, string> = COST_RATE_UNIT_LABELS;
 const CATEGORY_LABELS: Record<string, string> = COST_CATEGORY_LABELS;
-
-/** The additional cost that pricing would use now: valid, newest per (category,name). */
-function currentCosts<
-  T extends { id: string; effectiveFrom: Date; effectiveTo: Date | null; category: string | null; name: string | null },
->(costs: T[]): Set<string> {
-  const now = new Date();
-  const chosen = new Map<string, string>();
-  for (const c of [...costs].sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())) {
-    if (!c.category || c.effectiveFrom > now || (c.effectiveTo && c.effectiveTo < now)) continue;
-    const key = `${c.category}::${(c.name ?? "").toLowerCase()}`;
-    if (!chosen.has(key)) chosen.set(key, c.id);
-  }
-  return new Set(chosen.values());
-}
 
 interface Params {
   from?: string; // vertrekstad
@@ -77,20 +62,12 @@ const MESSAGES: Record<string, { text: string; ok: boolean }> = {
   "cost-updated": { text: "Aanvullende kost bijgewerkt.", ok: true },
 };
 
-/** The rate pricing would use right now: within validity, newest effectiveFrom. */
-function currentRate<T extends { effectiveFrom: Date; effectiveTo: Date | null }>(rates: T[]): T | undefined {
-  const now = new Date();
-  return rates
-    .filter((r) => r.effectiveFrom <= now && (!r.effectiveTo || r.effectiveTo >= now))
-    .sort((a, b) => b.effectiveFrom.getTime() - a.effectiveFrom.getTime())[0];
-}
-
 // Shared column layout for the header row and every route summary row (Task
 // 5A/5C) - a CSS grid, not an HTML <table>, so the expanded detail panel
 // (Task 5B) can sit in normal full-width document flow BELOW a row instead
 // of being forced into a table cell - the root cause of the old far-right
 // panel forcing horizontal scroll.
-const ROW_GRID = "grid grid-cols-[1.4fr_1.4fr_1fr_1fr_0.8fr_1fr_1.25rem] gap-3 items-center";
+const ROW_GRID = "grid grid-cols-[1.4fr_1.4fr_1fr_1fr_0.8fr_1.25rem] gap-3 items-center";
 
 export default async function RoutesPage({ searchParams }: { searchParams: Params }) {
   const [routes, origins, destinations, costTypes] = await Promise.all([
@@ -98,8 +75,8 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
       include: {
         origin: true,
         destination: true,
-        freightRates: { orderBy: { effectiveFrom: "desc" } },
-        ddpCostRates: { orderBy: [{ category: "asc" }, { effectiveFrom: "desc" }], include: { additionalCostType: true } },
+        freightRate: true,
+        ddpCostRates: { orderBy: [{ category: "asc" }], include: { additionalCostType: true } },
       },
       orderBy: { createdAt: "asc" },
     }),
@@ -115,7 +92,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
   const contains = (a: string | null | undefined, b: string) => (a ?? "").toLowerCase().includes(b.toLowerCase());
 
   let rows = routes
-    .map((r) => ({ route: r, rate: currentRate(r.freightRates) }))
+    .map((r) => ({ route: r, rate: r.freightRate }))
     .filter(({ route, rate }) => {
       if (searchParams.from && !ci(route.origin.city, searchParams.from)) return false;
       if (searchParams.to && !ci(route.destination.city, searchParams.to)) return false;
@@ -152,7 +129,6 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
       case "currency": return x.rate?.currency ?? "";
       case "rate": return x.rate ? Number(x.rate.ratePerKg) : -1;
       case "unit": return x.rate ? UNIT_LABELS[x.rate.rateUnit] : "";
-      case "effectiveFrom": return x.rate ? x.rate.effectiveFrom.getTime() : 0;
       default: return x.route.origin.city;
     }
   };
@@ -164,7 +140,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
 
   const cityOptions = (list: { city: string }[]) => [...new Set(list.map((x) => x.city))].sort();
   const countryOptions = (list: { country: string }[]) => [...new Set(list.map((x) => x.country))].sort();
-  const currencyOptions = [...new Set(routes.flatMap((r) => r.freightRates.map((fr) => fr.currency)))].sort();
+  const currencyOptions = [...new Set(routes.map((r) => r.freightRate?.currency).filter((c): c is string => !!c))].sort();
   const hasFilters = !!(searchParams.from || searchParams.to || searchParams.fromCountry || searchParams.toCountry || searchParams.transport || searchParams.currency || searchParams.q);
 
   const sortLink = (key: string) => {
@@ -198,9 +174,9 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
       <div>
         <h1 className="text-2xl font-semibold text-gray-900">Routes & vracht</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Herbruikbare locaties, routes per transporttype en één of meer vrachttarieven per route. Het tarief dat nu
-          geldig is (ingangsdatum bereikt, niet verlopen, actief) wordt gebruikt voor nieuwe offertes. Klik op een
-          route voor tariefgeschiedenis, instellingen en aanvullende kosten.
+          Herbruikbare locaties, routes per transporttype en één actueel vrachttarief per route. Het tarief blijft
+          geldig totdat je het zelf aanpast - er is geen geldigheidsperiode of geschiedenis. Klik op een route voor
+          instellingen en aanvullende kosten.
         </p>
       </div>
 
@@ -281,12 +257,10 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
           <Th k="transport">Transport</Th>
           <Th k="rate">Tarief</Th>
           <Th k="unit">Eenheid</Th>
-          <Th k="effectiveFrom">Ingangsdatum</Th>
           <span />
         </div>
 
         {rows.map(({ route, rate }) => {
-          const activeCostIds = currentCosts(route.ddpCostRates);
           return (
             <details key={route.id} name="route-expand" className="group border-b border-gray-100 last:border-b-0">
               <summary
@@ -311,81 +285,42 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                   )}
                 </span>
                 <span className="text-gray-500">{rate ? UNIT_LABELS[rate.rateUnit] : "-"}</span>
-                <span className="text-gray-500">{rate ? fmtDate(rate.effectiveFrom) : "-"}</span>
                 <span className="text-gray-400 transition-transform group-open:rotate-90 justify-self-end">›</span>
               </summary>
 
               <div className="px-4 pb-4 pt-1 bg-gray-50 space-y-4">
                 <div>
-                  <div className="font-medium text-gray-700 text-sm mb-1.5">Tariefgeschiedenis</div>
-                  <div className="card overflow-x-auto">
-                    <table className="table-compact">
-                      <thead>
-                        <tr>
-                          <th>Tarief</th>
-                          <th>Eenheid</th>
-                          <th>Geldig van</th>
-                          <th>Geldig tot</th>
-                          <th></th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {route.freightRates.map((fr) => (
-                          <tr key={fr.id} className={rate?.id === fr.id ? "font-semibold" : ""}>
-                            <td>{fr.currency} {fmtMoney(fr.ratePerKg, 4)}</td>
-                            <td>{UNIT_LABELS[fr.rateUnit]}</td>
-                            <td>{fmtDate(fr.effectiveFrom)}</td>
-                            <td>{fr.effectiveTo ? fmtDate(fr.effectiveTo) : "-"}</td>
-                            <td>{rate?.id === fr.id && <span className="badge-high">in gebruik</span>}</td>
-                            <td>
-                              <form action={deleteFreightRate.bind(null, fr.id)}>
-                                <ConfirmButton
-                                  message="Weet je zeker dat je dit tarief wilt verwijderen? Dit kan niet ongedaan worden gemaakt."
-                                  className="text-xs text-red-600 hover:underline"
-                                >
-                                  Verwijderen
-                                </ConfirmButton>
-                              </form>
-                            </td>
-                          </tr>
-                        ))}
-                        {route.freightRates.length === 0 && (
-                          <tr><td colSpan={6} className="text-gray-400">Nog geen tarieven.</td></tr>
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
+                  <div className="font-medium text-gray-700 text-sm mb-1.5">Vrachttarief</div>
+                  <form action={saveFreightRate.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
+                    <div>
+                      <label className="label">Bedrag</label>
+                      <input
+                        name="ratePerKg"
+                        type="number"
+                        step="0.0001"
+                        required
+                        defaultValue={rate?.ratePerKg.toString() ?? ""}
+                        className="input py-1 px-2 text-xs w-24"
+                      />
+                    </div>
+                    <div>
+                      <label className="label">Valuta</label>
+                      <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue={rate?.currency ?? "USD"}>
+                        <option value="USD">USD</option>
+                        <option value="EUR">EUR</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="label">Eenheid</label>
+                      <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue={rate?.rateUnit ?? "PER_KG"}>
+                        {Object.entries(UNIT_LABELS)
+                          .filter(([k]) => k !== "FLAT")
+                          .map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                    <button className="btn-primary py-1 px-2 text-xs">Opslaan</button>
+                  </form>
                 </div>
-
-                <form action={addFreightRate.bind(null, route.id)} className="flex flex-wrap gap-2 items-end">
-                  <div>
-                    <label className="label">Nieuw tarief</label>
-                    <input name="ratePerKg" type="number" step="0.0001" required className="input py-1 px-2 text-xs w-24" />
-                  </div>
-                  <div>
-                    <label className="label">Valuta</label>
-                    <select name="currency" className="input py-1 px-2 text-xs w-20" defaultValue={rate?.currency ?? "USD"}>
-                      <option value="USD">USD</option>
-                      <option value="EUR">EUR</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Eenheid</label>
-                    <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_KG">
-                      {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Geldig vanaf</label>
-                    <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
-                  </div>
-                  <div>
-                    <label className="label">Geldig tot</label>
-                    <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
-                  </div>
-                  <button className="btn-primary py-1 px-2 text-xs">Tarief toevoegen</button>
-                </form>
 
                 <div className="flex items-center gap-3 pt-3 border-t border-gray-200 text-sm">
                   <span className="badge bg-gray-100 text-gray-700">FOB altijd beschikbaar</span>
@@ -415,13 +350,11 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                     <table className="table-compact">
                       <thead>
                         <tr>
-                          <th>Naam</th>
+                          <th>Kostensoort</th>
                           <th>Categorie</th>
                           <th>Bedrag</th>
+                          <th>Valuta</th>
                           <th>Eenheid</th>
-                          <th>Geldig van</th>
-                          <th>Geldig tot</th>
-                          <th></th>
                           <th></th>
                         </tr>
                       </thead>
@@ -435,7 +368,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                               : activeCostTypes;
                             return (
                               <tr key={c.id}>
-                                <td colSpan={8}>
+                                <td colSpan={6}>
                                   <form
                                     action={updateRouteCost.bind(null, c.id)}
                                     className="flex flex-wrap gap-2 items-end py-1"
@@ -479,24 +412,6 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                                         {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                                       </select>
                                     </div>
-                                    <div>
-                                      <label className="label">Geldig vanaf</label>
-                                      <input
-                                        name="effectiveFrom"
-                                        type="date"
-                                        defaultValue={c.effectiveFrom.toISOString().slice(0, 10)}
-                                        className="input py-1 px-2 text-xs"
-                                      />
-                                    </div>
-                                    <div>
-                                      <label className="label">Geldig tot</label>
-                                      <input
-                                        name="effectiveTo"
-                                        type="date"
-                                        defaultValue={c.effectiveTo ? c.effectiveTo.toISOString().slice(0, 10) : ""}
-                                        className="input py-1 px-2 text-xs"
-                                      />
-                                    </div>
                                     <button className="btn-primary py-1 px-2 text-xs">Opslaan</button>
                                     <Link href={buildUrl({ editCost: undefined })} className="text-xs text-gray-500 hover:underline px-2">
                                       Annuleren
@@ -507,14 +422,12 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                             );
                           }
                           return (
-                            <tr key={c.id} className={activeCostIds.has(c.id) ? "font-semibold" : ""}>
+                            <tr key={c.id}>
                               <td>{displayAdditionalCostName(c)}</td>
                               <td>{c.category ? CATEGORY_LABELS[c.category] : "-"}</td>
-                              <td>{c.currency} {fmtMoney(c.amount, 4)}</td>
+                              <td>{fmtMoney(c.amount, 4)}</td>
+                              <td>{c.currency}</td>
                               <td>{c.rateUnit ? UNIT_LABELS[c.rateUnit] : "-"}</td>
-                              <td>{fmtDate(c.effectiveFrom)}</td>
-                              <td>{c.effectiveTo ? fmtDate(c.effectiveTo) : "-"}</td>
-                              <td>{activeCostIds.has(c.id) && <span className="badge-high">in gebruik</span>}</td>
                               <td className="whitespace-nowrap">
                                 <Link href={buildUrl({ editCost: c.id })} className="text-xs text-blue-600 hover:underline mr-2">
                                   Bewerken
@@ -532,7 +445,7 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                           );
                         })}
                         {route.ddpCostRates.length === 0 && (
-                          <tr><td colSpan={8} className="text-gray-400">Nog geen aanvullende kosten.</td></tr>
+                          <tr><td colSpan={6} className="text-gray-400">Nog geen aanvullende kosten.</td></tr>
                         )}
                       </tbody>
                     </table>
@@ -566,14 +479,6 @@ export default async function RoutesPage({ searchParams }: { searchParams: Param
                       <select name="rateUnit" className="input py-1 px-2 text-xs" defaultValue="PER_STEM">
                         {Object.entries(UNIT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                       </select>
-                    </div>
-                    <div>
-                      <label className="label">Geldig vanaf</label>
-                      <input name="effectiveFrom" type="date" className="input py-1 px-2 text-xs" />
-                    </div>
-                    <div>
-                      <label className="label">Geldig tot</label>
-                      <input name="effectiveTo" type="date" className="input py-1 px-2 text-xs" />
                     </div>
                     <button className="btn-primary py-1 px-2 text-xs">Kosten toevoegen</button>
                   </form>

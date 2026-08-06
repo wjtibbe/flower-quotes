@@ -52,14 +52,17 @@ export function displayAdditionalCostName(cost: {
   return cost.additionalCostType?.name ?? cost.name ?? "Onbekend";
 }
 
-/** Raw (string) form input for adding/editing one route additional cost. */
+/**
+ * Raw (string) form input for adding/editing one route additional cost.
+ * Business rule: no validity periods - a route has exactly one CURRENT
+ * amount per additional cost type, editable at any time, so there is
+ * deliberately no effectiveFrom/effectiveTo here.
+ */
 export interface RouteCostFormInput {
   additionalCostTypeId: string | null;
   amount: string | null;
   currency: string | null;
   rateUnit: string | null;
-  effectiveFrom: string | null;
-  effectiveTo: string | null;
 }
 
 /**
@@ -77,8 +80,27 @@ export function validateRouteCostInput(input: RouteCostFormInput): string | null
   }
   if (!input.currency) return "Valuta is verplicht";
   if (!input.rateUnit) return "Eenheid is verplicht";
-  if (input.effectiveFrom && input.effectiveTo && new Date(input.effectiveTo) < new Date(input.effectiveFrom)) {
-    return "Geldig tot kan niet vóór geldig vanaf liggen";
+  return null;
+}
+
+/** Raw (string) form input for saving a route's current freight tariff. No validity periods - see RouteCostFormInput's doc comment. */
+export interface FreightRateFormInput {
+  amount: string | null;
+  currency: string | null;
+  rateUnit: string | null;
+}
+
+/**
+ * Validates a route freight tariff's save form input. Pure and
+ * database-independent, shared by the single save action so the rule can
+ * never drift. Returns a Dutch error message, or null when the input is
+ * valid.
+ */
+export function validateFreightRateInput(input: FreightRateFormInput): string | null {
+  if (!input.amount || !Number.isFinite(Number(input.amount)) || Number(input.amount) <= 0) {
+    return "Tarief moet positief zijn";
   }
+  if (!input.currency) return "Valuta is verplicht";
+  if (!input.rateUnit) return "Eenheid is verplicht";
   return null;
 }

@@ -8,6 +8,7 @@ const mockRevalidatePath = vi.fn();
 vi.mock("next/cache", () => ({ revalidatePath: (...a: unknown[]) => mockRevalidatePath(...a) }));
 
 const mockCostTypeFindUnique = vi.fn();
+const mockDdpCostRateFindUnique = vi.fn();
 const mockDdpCostRateCreate = vi.fn();
 const mockDdpCostRateUpdate = vi.fn();
 
@@ -15,6 +16,7 @@ vi.mock("@/lib/db", () => ({
   prisma: {
     additionalCostType: { findUnique: (...a: unknown[]) => mockCostTypeFindUnique(...a) },
     ddpCostRate: {
+      findUnique: (...a: unknown[]) => mockDdpCostRateFindUnique(...a),
       create: (...a: unknown[]) => mockDdpCostRateCreate(...a),
       update: (...a: unknown[]) => mockDdpCostRateUpdate(...a),
     },
@@ -40,6 +42,9 @@ const clearingType = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockCostTypeFindUnique.mockResolvedValue(clearingType);
+  // No existing row for this (route, type) by default - addRouteCost's
+  // duplicate check passes through unless a test explicitly overrides it.
+  mockDdpCostRateFindUnique.mockResolvedValue(null);
   mockDdpCostRateCreate.mockResolvedValue({ id: "cost-new" });
   mockDdpCostRateUpdate.mockResolvedValue({ id: "cost-1" });
 });
@@ -62,22 +67,21 @@ describe("addRouteCost", () => {
         }),
       }),
     );
+    // Business rule: no validity periods at all - the create payload never
+    // carries effectiveFrom/effectiveTo.
+    const data = mockDdpCostRateCreate.mock.calls[0][0].data;
+    expect(data.effectiveFrom).toBeUndefined();
+    expect(data.effectiveTo).toBeUndefined();
   });
 
-  it("9: rejects when validUntil (effectiveTo) is before validFrom (effectiveFrom)", async () => {
+  it("8: a duplicate route + cost type is rejected, not silently created or overwritten", async () => {
+    mockDdpCostRateFindUnique.mockResolvedValue({ id: "cost-existing", routeId: "route-1", additionalCostTypeId: "type-clearing" });
     await expect(
       addRouteCost(
         "route-1",
-        formData({
-          additionalCostTypeId: "type-clearing",
-          amount: "1.5",
-          currency: "USD",
-          rateUnit: "PER_STEM",
-          effectiveFrom: "2026-06-01",
-          effectiveTo: "2026-01-01",
-        }),
+        formData({ additionalCostTypeId: "type-clearing", amount: "1.5", currency: "USD", rateUnit: "PER_STEM" }),
       ),
-    ).rejects.toThrow("REDIRECT:");
+    ).rejects.toThrow("REDIRECT:/routes?err=");
     expect(mockDdpCostRateCreate).not.toHaveBeenCalled();
   });
 
@@ -102,12 +106,19 @@ describe("addRouteCost", () => {
 
 describe("updateRouteCost", () => {
   const validEdit = { additionalCostTypeId: "type-clearing", amount: "2.25", currency: "EUR", rateUnit: "PER_BOX" };
+  const existingRow = { id: "cost-1", routeId: "route-1", additionalCostTypeId: "type-clearing" };
 
-  it("5: editing the amount is applied", async () => {
+  beforeEach(() => {
+    // updateRouteCost always re-reads the row it's editing first.
+    mockDdpCostRateFindUnique.mockResolvedValue(existingRow);
+  });
+
+  it("7: editing the amount updates the existing row (never creates a new one)", async () => {
     await expect(updateRouteCost("cost-1", formData(validEdit))).rejects.toThrow("REDIRECT:/routes?msg=cost-updated");
     expect(mockDdpCostRateUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: "cost-1" }, data: expect.objectContaining({ amount: "2.25" }) }),
     );
+    expect(mockDdpCostRateCreate).not.toHaveBeenCalled();
   });
 
   it("6: editing the currency is applied", async () => {
@@ -117,13 +128,11 @@ describe("updateRouteCost", () => {
     );
   });
 
-  it("7: editing the validity dates is applied", async () => {
-    await expect(
-      updateRouteCost("cost-1", formData({ ...validEdit, effectiveFrom: "2026-02-01", effectiveTo: "2026-08-01" })),
-    ).rejects.toThrow("REDIRECT:");
+  it("the update payload never carries effectiveFrom/effectiveTo (business rule: no validity periods)", async () => {
+    await expect(updateRouteCost("cost-1", formData(validEdit))).rejects.toThrow("REDIRECT:");
     const data = mockDdpCostRateUpdate.mock.calls[0][0].data;
-    expect(data.effectiveFrom.toISOString().slice(0, 10)).toBe("2026-02-01");
-    expect(data.effectiveTo.toISOString().slice(0, 10)).toBe("2026-08-01");
+    expect(data.effectiveFrom).toBeUndefined();
+    expect(data.effectiveTo).toBeUndefined();
   });
 
   it("8: editing the cost type re-snapshots name/category from the newly chosen type", async () => {
@@ -134,6 +143,10 @@ describe("updateRouteCost", () => {
       defaultUnit: "PER_BOX",
       isActive: true,
     });
+    // No existing row for (route-1, type-handling), so the type change is allowed.
+    mockDdpCostRateFindUnique.mockImplementation(({ where }: { where: { id?: string } }) =>
+      Promise.resolve(where.id === "cost-1" ? existingRow : null),
+    );
     await expect(
       updateRouteCost("cost-1", formData({ ...validEdit, additionalCostTypeId: "type-handling" })),
     ).rejects.toThrow("REDIRECT:");
@@ -144,10 +157,23 @@ describe("updateRouteCost", () => {
     );
   });
 
-  it("9: rejects when validUntil is before validFrom on edit", async () => {
+  it("8: changing the cost type to one this route already has a different row for is rejected", async () => {
+    mockCostTypeFindUnique.mockResolvedValue({
+      id: "type-handling",
+      name: "Handling",
+      category: "HANDLING",
+      defaultUnit: "PER_BOX",
+      isActive: true,
+    });
+    mockDdpCostRateFindUnique.mockImplementation(({ where }: { where: { id?: string; routeId_additionalCostTypeId?: unknown } }) => {
+      if (where.id === "cost-1") return Promise.resolve(existingRow);
+      // A different row already has (route-1, type-handling).
+      if (where.routeId_additionalCostTypeId) return Promise.resolve({ id: "cost-other", routeId: "route-1", additionalCostTypeId: "type-handling" });
+      return Promise.resolve(null);
+    });
     await expect(
-      updateRouteCost("cost-1", formData({ ...validEdit, effectiveFrom: "2026-06-01", effectiveTo: "2026-01-01" })),
-    ).rejects.toThrow("REDIRECT:");
+      updateRouteCost("cost-1", formData({ ...validEdit, additionalCostTypeId: "type-handling" })),
+    ).rejects.toThrow("REDIRECT:/routes?err=");
     expect(mockDdpCostRateUpdate).not.toHaveBeenCalled();
   });
 

@@ -4,6 +4,7 @@ import {
   filterActiveCostTypes,
   normalizeCostTypeName,
   validateRouteCostInput,
+  validateFreightRateInput,
 } from "../additionalCostTypes";
 
 describe("normalizeCostTypeName - case/whitespace-insensitive uniqueness key", () => {
@@ -39,17 +40,15 @@ describe("filterActiveCostTypes - Routes & Freight add-dropdown source", () => {
   });
 });
 
-describe("validateRouteCostInput - shared add/edit validation", () => {
+describe("validateRouteCostInput - shared add/edit validation (business rule: no validity periods)", () => {
   const base = {
     additionalCostTypeId: "type-1",
     amount: "1.5",
     currency: "USD",
     rateUnit: "PER_STEM",
-    effectiveFrom: "2026-01-01",
-    effectiveTo: "2026-06-01",
   };
 
-  it("valid input passes", () => {
+  it("5: valid input passes", () => {
     expect(validateRouteCostInput(base)).toBeNull();
   });
 
@@ -71,17 +70,31 @@ describe("validateRouteCostInput - shared add/edit validation", () => {
     expect(validateRouteCostInput({ ...base, rateUnit: null })).toMatch(/Eenheid/);
   });
 
-  it("9: rejects validUntil (effectiveTo) before validFrom (effectiveFrom)", () => {
-    const result = validateRouteCostInput({ ...base, effectiveFrom: "2026-06-01", effectiveTo: "2026-01-01" });
-    expect(result).toMatch(/vóór/);
+  it("5: has no effectiveFrom/effectiveTo fields at all - validFrom/validTo are no longer required or accepted", () => {
+    expect(Object.keys(base)).not.toContain("effectiveFrom");
+    expect(Object.keys(base)).not.toContain("effectiveTo");
+  });
+});
+
+describe("validateFreightRateInput - freight tariff save validation (business rule: no validity periods)", () => {
+  const base = { amount: "4.25", currency: "USD", rateUnit: "PER_KG" };
+
+  it("valid input passes", () => {
+    expect(validateFreightRateInput(base)).toBeNull();
   });
 
-  it("9: accepts validUntil equal to or after validFrom", () => {
-    expect(validateRouteCostInput({ ...base, effectiveFrom: "2026-01-01", effectiveTo: "2026-01-01" })).toBeNull();
+  it("amount must be positive", () => {
+    expect(validateFreightRateInput({ ...base, amount: "0" })).toMatch(/positief/);
+    expect(validateFreightRateInput({ ...base, amount: "-1" })).toMatch(/positief/);
+    expect(validateFreightRateInput({ ...base, amount: null })).toMatch(/positief/);
   });
 
-  it("9: allows either date to be omitted", () => {
-    expect(validateRouteCostInput({ ...base, effectiveFrom: null, effectiveTo: null })).toBeNull();
+  it("currency is required", () => {
+    expect(validateFreightRateInput({ ...base, currency: null })).toMatch(/Valuta/);
+  });
+
+  it("unit is required", () => {
+    expect(validateFreightRateInput({ ...base, rateUnit: null })).toMatch(/Eenheid/);
   });
 });
 

@@ -23,7 +23,7 @@ export default async function DashboardPage() {
         include: { farmOffer: { include: { farm: true } } },
       }),
       prisma.route.findMany({
-        where: { freightRates: { none: {} } },
+        where: { freightRate: null },
         include: { origin: true, destination: true },
       }),
       prisma.exchangeRate.findMany({ orderBy: { effectiveFrom: "desc" } }),

@@ -14,7 +14,7 @@ const mockOriginFindFirst = vi.fn();
 const mockOriginCreate = vi.fn();
 const mockDestinationFindUnique = vi.fn();
 const mockRouteFindMany = vi.fn();
-const mockFreightRateFindFirst = vi.fn();
+const mockFreightRateFindUnique = vi.fn();
 const mockDdpCostRateFindMany = vi.fn();
 const mockExchangeRateFindFirst = vi.fn();
 
@@ -29,7 +29,7 @@ vi.mock("@/lib/db", () => ({
     },
     destination: { findUnique: (...a: unknown[]) => mockDestinationFindUnique(...a) },
     route: { findMany: (...a: unknown[]) => mockRouteFindMany(...a) },
-    freightRate: { findFirst: (...a: unknown[]) => mockFreightRateFindFirst(...a) },
+    freightRate: { findUnique: (...a: unknown[]) => mockFreightRateFindUnique(...a) },
     ddpCostRate: { findMany: (...a: unknown[]) => mockDdpCostRateFindMany(...a) },
     exchangeRate: { findFirst: (...a: unknown[]) => mockExchangeRateFindFirst(...a) },
   },
@@ -99,7 +99,7 @@ describe("resolvePricingContext - route selection", () => {
     mockRouteFindMany.mockResolvedValue([
       { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "2.9" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "2.9" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     const ctx = await resolvePricingContext(
@@ -119,7 +119,7 @@ describe("resolvePricingContext - route selection", () => {
     mockRouteFindMany.mockResolvedValue([
       { id: QUITO_ROUTE_ID, originId: QUITO_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     const ctx = await resolvePricingContext(farmOfferLine({ originId: QUITO_ORIGIN_ID }), customer(), "DDP");
@@ -133,7 +133,7 @@ describe("resolvePricingContext - route selection", () => {
     mockRouteFindMany.mockResolvedValue([
       { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue(null);
+    mockFreightRateFindUnique.mockResolvedValue(null);
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     const ctx = await resolvePricingContext(farmOfferLine({ originId: null }), customer(), "DDP");
@@ -181,7 +181,7 @@ describe("resolvePricingContext - country-based default departure (interim rule)
     mockRouteFindMany.mockResolvedValue([
       { id: QUITO_ROUTE_ID, originId: QUITO_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     const ctx = await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
@@ -197,7 +197,7 @@ describe("resolvePricingContext - country-based default departure (interim rule)
     mockRouteFindMany.mockResolvedValue([
       { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "2.9" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "2.9" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     const ctx = await resolvePricingContext(farmOfferLine({ originId: null }), customer({ destinationId: AMSTERDAM_DEST_ID }), "DDP");
@@ -258,7 +258,7 @@ describe("resolvePricingContext - country-based default departure (interim rule)
             : [],
       ),
     );
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([]);
 
     mockFarmOfferFindUnique.mockResolvedValueOnce({ farm: { name: "Mystic Flowers", originId: null, country: "Ecuador" } });
@@ -281,54 +281,37 @@ describe("resolvePricingContext - country-based default departure (interim rule)
   });
 });
 
-describe("resolvePricingContext - effective-date filtering", () => {
+describe("resolvePricingContext - no effective-date filtering (business rule: one current tariff/route, no validity periods)", () => {
   const route = { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true };
 
-  it("5: a tariff with validFrom before the quote date is active", async () => {
+  it("4: quote pricing loads the route's current tariff directly via findUnique on routeId - no date filter at all", async () => {
     mockRouteFindMany.mockResolvedValue([route]);
     mockDdpCostRateFindMany.mockResolvedValue([]);
-    mockFreightRateFindFirst.mockImplementation(({ where }) => {
-      // Simulate Prisma's own filtering rather than trusting the resolver blindly.
-      const activeFrom = new Date("2026-07-10");
-      const matches = where.effectiveFrom.lte >= activeFrom;
-      return Promise.resolve(matches ? { ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW } : null);
-    });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+
+    const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
+
+    expect(ctx.freightRatePerKg).toBe("3.1");
+    expect(mockFreightRateFindUnique).toHaveBeenCalledWith({ where: { routeId: BOGOTA_ROUTE_ID } });
+  });
+
+  it("5: validFrom/validTo are no longer required - a tariff resolves with no date fields present at all", async () => {
+    mockRouteFindMany.mockResolvedValue([route]);
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+    // No effectiveFrom/effectiveTo on this row at all - the resolver never reads them.
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
 
     const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
     expect(ctx.freightRatePerKg).toBe("3.1");
   });
 
-  it("6: an expired tariff (effectiveTo in the past) is ignored", async () => {
+  it("a route with no FreightRate row at all simply has no tariff - never a date-filtering artifact", async () => {
     mockRouteFindMany.mockResolvedValue([route]);
     mockDdpCostRateFindMany.mockResolvedValue([]);
-    // Prisma's own OR:[{effectiveTo:null},{effectiveTo:{gte:now}}] would
-    // exclude an expired row - findFirst correctly returns null.
-    mockFreightRateFindFirst.mockResolvedValue(null);
+    mockFreightRateFindUnique.mockResolvedValue(null);
 
     const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
     expect(ctx.freightRatePerKg).toBeNull();
-  });
-
-  it("7: a future-dated tariff (effectiveFrom after the quote date) is ignored", async () => {
-    mockRouteFindMany.mockResolvedValue([route]);
-    mockDdpCostRateFindMany.mockResolvedValue([]);
-    mockFreightRateFindFirst.mockResolvedValue(null);
-
-    const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
-    expect(ctx.freightRatePerKg).toBeNull();
-    // The query itself must ask for effectiveFrom <= now.
-    expect(mockFreightRateFindFirst.mock.calls[0][0].where.effectiveFrom).toEqual({ lte: NOW });
-  });
-
-  it("8: an open-ended tariff (effectiveTo null) is treated as currently active", async () => {
-    mockRouteFindMany.mockResolvedValue([route]);
-    mockDdpCostRateFindMany.mockResolvedValue([]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
-
-    const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
-    expect(ctx.freightRatePerKg).toBe("3.1");
-    const call = mockFreightRateFindFirst.mock.calls[0][0];
-    expect(call.where.OR).toContainEqual({ effectiveTo: null });
   });
 });
 
@@ -337,7 +320,7 @@ describe("resolvePricingContext - additional cost categories", () => {
 
   beforeEach(() => {
     mockRouteFindMany.mockResolvedValue([route]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
   });
 
   it("9: a CLEARING category cost resolves", async () => {
@@ -346,6 +329,15 @@ describe("resolvePricingContext - additional cost categories", () => {
     ]);
     const ctx = await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
     expect(ctx.additionalCosts).toEqual([{ name: "Clearing", category: "CLEARING", amount: "0.015", unit: "PER_STEM" }]);
+  });
+
+  it("9: additional costs are loaded via the route's current rows directly - no effective-date filter in the query at all", async () => {
+    mockDdpCostRateFindMany.mockResolvedValue([]);
+    await resolvePricingContext(farmOfferLine({ originId: BOGOTA_ORIGIN_ID }), customer(), "DDP");
+
+    expect(mockDdpCostRateFindMany).toHaveBeenCalledWith({
+      where: { routeId: BOGOTA_ROUTE_ID, additionalCostTypeId: { not: null } },
+    });
   });
 
   it("10: an INSPECTION category cost resolves", async () => {
@@ -384,7 +376,7 @@ describe("priceLineForCustomer - actionable route-specific errors", () => {
     mockRouteFindMany.mockResolvedValue([
       { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue(null);
+    mockFreightRateFindUnique.mockResolvedValue(null);
     mockDdpCostRateFindMany.mockResolvedValue([
       { name: "Clearing", category: "CLEARING", rateUnit: "PER_STEM", amount: { toString: () => "0.01" }, effectiveFrom: NOW, effectiveTo: null },
       { name: "Handling", category: "HANDLING", rateUnit: "PER_BOX", amount: { toString: () => "1" }, effectiveFrom: NOW, effectiveTo: null },
@@ -407,7 +399,7 @@ describe("priceLineForCustomer - actionable route-specific errors", () => {
     mockRouteFindMany.mockResolvedValue([
       { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([
       { name: "Clearing", category: "CLEARING", rateUnit: "PER_STEM", amount: { toString: () => "0.01" }, effectiveFrom: NOW, effectiveTo: null },
     ]);
@@ -470,7 +462,7 @@ describe("priceLineForCustomer - actionable route-specific errors", () => {
     mockRouteFindMany.mockResolvedValue([
       { id: BOGOTA_ROUTE_ID, originId: BOGOTA_ORIGIN_ID, destinationId: AMSTERDAM_DEST_ID, transportType: "AIR", supportsCfr: true, supportsDdp: true },
     ]);
-    mockFreightRateFindFirst.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
+    mockFreightRateFindUnique.mockResolvedValue({ ratePerKg: { toString: () => "3.1" }, rateUnit: "PER_KG", updatedAt: NOW });
     mockDdpCostRateFindMany.mockResolvedValue([
       { name: "Clearing", category: "CLEARING", rateUnit: "PER_STEM", amount: { toString: () => "0.01" }, effectiveFrom: NOW, effectiveTo: null },
       { name: "Handling", category: "HANDLING", rateUnit: "PER_BOX", amount: { toString: () => "1" }, effectiveFrom: NOW, effectiveTo: null },

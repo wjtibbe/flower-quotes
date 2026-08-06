@@ -142,17 +142,10 @@ export async function resolvePricingContext(
       if (incoterm === "DDP" && !route.supportsDdp) routeSupportsIncoterm = false;
 
       if (incoterm === "CFR" || incoterm === "DDP") {
-        // The applicable rate: already effective, not yet expired;
-        // the most recently effective one wins. A future-dated rate is not
-        // used until its effectiveFrom passes.
-        const rate = await prisma.freightRate.findFirst({
-          where: {
-            routeId: route.id,
-            effectiveFrom: { lte: now },
-            OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
-          },
-          orderBy: { effectiveFrom: "desc" },
-        });
+        // One current tariff per route (business rule: no validity periods/
+        // history) - routeId is @unique on FreightRate, so this is always
+        // either the route's one tariff or nothing at all.
+        const rate = await prisma.freightRate.findUnique({ where: { routeId: route.id } });
         if (rate) {
           freightRatePerKg = rate.ratePerKg.toString();
           freightRateUnit = rate.rateUnit;
@@ -161,7 +154,7 @@ export async function resolvePricingContext(
       }
 
       if (incoterm === "DDP") {
-        additionalCosts = await resolveAdditionalCosts(route.id, now);
+        additionalCosts = await resolveAdditionalCosts(route.id);
       }
     }
   }
@@ -214,36 +207,27 @@ export async function resolvePricingContext(
 }
 
 /**
- * Resolves the route's additional costs that are valid right now. Cost lines
- * are grouped by (category, name); within each group the currently-valid,
- * newest-effectiveFrom row wins - so multiple costs coexist, a future-dated
- * row supersedes automatically, and deleting a row drops it. A legacy row
- * without category/rateUnit (only costType) is skipped by the new UI path but
- * still resolvable via its backfilled fields.
+ * Resolves the route's current additional costs: one row per
+ * additionalCostType (business rule: no validity periods/history -
+ * `@@unique([routeId, additionalCostTypeId])` enforces this at the database
+ * level, so every row returned here already IS the route's current value for
+ * that type). A legacy row without category/rateUnit (only costType), or
+ * without a linked additionalCostType at all, is skipped - never resolvable,
+ * matching prior behavior.
  */
-async function resolveAdditionalCosts(routeId: string, now: Date): Promise<AdditionalCostInput[]> {
+async function resolveAdditionalCosts(routeId: string): Promise<AdditionalCostInput[]> {
   const rows = await prisma.ddpCostRate.findMany({
-    where: {
-      routeId,
-      effectiveFrom: { lte: now },
-      OR: [{ effectiveTo: null }, { effectiveTo: { gte: now } }],
-    },
-    orderBy: { effectiveFrom: "desc" },
+    where: { routeId, additionalCostTypeId: { not: null } },
   });
 
-  const chosen = new Map<string, AdditionalCostInput>();
-  for (const r of rows) {
-    if (!r.category || !r.rateUnit) continue; // needs the generalized fields
-    const key = `${r.category}::${(r.name ?? "").toLowerCase()}`;
-    if (chosen.has(key)) continue; // newest effectiveFrom already taken
-    chosen.set(key, {
-      name: r.name ?? r.category,
+  return rows
+    .filter((r) => r.category && r.rateUnit)
+    .map((r) => ({
+      name: r.name ?? r.category!,
       category: r.category as CostCategory,
       amount: r.amount.toString(),
       unit: r.rateUnit as CostRateUnit,
-    });
-  }
-  return [...chosen.values()];
+    }));
 }
 
 /**

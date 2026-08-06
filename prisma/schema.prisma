@@ -277,7 +277,10 @@ model Route {
 
   origin       Origin        @relation(fields: [originId], references: [id])
   destination  Destination   @relation(fields: [destinationId], references: [id])
-  freightRates FreightRate[]
+  // One current freight tariff per route (business rule: no validity
+  // periods/history - see FreightRate below) - a true one-to-one relation,
+  // enforced by FreightRate.routeId being @unique.
+  freightRate  FreightRate?
   ddpCostRates DdpCostRate[]
 
   @@unique([originId, destinationId, transportType])
@@ -292,23 +295,27 @@ enum FreightRateUnit {
   PER_STEM
 }
 
+// One row per route (business rule: "we do not use tariff validity periods
+// or tariff history" - a route's freight tariff stays active until the user
+// manually changes it, so editing updates this same row in place; there is
+// no effectiveFrom/effectiveTo and never more than one row per route,
+// enforced by the @unique below). Historical quotes are unaffected - a
+// QuoteLine snapshots the rate values it used onto its own columns at
+// creation time (freightRatePerKg/freightRateUnit) rather than referencing
+// this row, so editing or replacing it never changes a past quote.
 model FreightRate {
-  id            String          @id @default(uuid())
-  routeId       String
-  currency      String // ISO code, e.g. USD
+  id        String          @id @default(uuid())
+  routeId   String          @unique
+  currency  String // ISO code, e.g. USD
   // Legacy column name - holds the rate amount in whatever unit rateUnit says
   // (kept as "ratePerKg" for backwards compatibility; PER_KG is the default).
-  ratePerKg     Decimal         @db.Decimal(10, 4)
-  rateUnit      FreightRateUnit @default(PER_KG)
-  effectiveFrom DateTime        @default(now())
-  effectiveTo   DateTime?
-  notes         String?
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  ratePerKg Decimal         @db.Decimal(10, 4)
+  rateUnit  FreightRateUnit @default(PER_KG)
+  notes     String?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 
   route Route @relation(fields: [routeId], references: [id])
-
-  @@index([routeId])
 }
 
 // DDP cost rates per route: one combined clearing+inspection price per stem,
@@ -350,9 +357,19 @@ enum CostRateUnit {
   FLAT
 }
 
+// One row per route + additionalCostType (business rule: same "no validity
+// periods/history" principle as FreightRate - editing updates this row in
+// place; there is no effectiveFrom/effectiveTo). `@@unique([routeId,
+// additionalCostTypeId])` enforces this going forward; legacy rows with a
+// null additionalCostTypeId (pre-dating the canonical vocabulary) are exempt
+// from that constraint (Postgres never considers two NULLs a duplicate) and
+// are simply never selected by pricing/the UI (both filter on
+// `additionalCostTypeId != null`), matching prior behavior. Historical
+// quotes are unaffected - QuoteLine.additionalCostsSnapshot freezes the
+// values used at creation time.
 model DdpCostRate {
-  id            String        @id @default(uuid())
-  routeId       String
+  id      String @id @default(uuid())
+  routeId String
   // Legacy discriminator, now optional. New rows use name/category/rateUnit
   // instead; kept so historical rows and any old readers stay valid.
   costType      DdpCostType?
@@ -367,20 +384,19 @@ model DdpCostRate {
   // retain a snapshot/display name for historical output", but the
   // canonical relationship for anything NEW is additionalCostTypeId, never
   // this text alone.
-  name          String? // human label, e.g. "Clearing & inspection"
-  category      CostCategory?
-  rateUnit      CostRateUnit?
-  currency      String
-  amount        Decimal       @db.Decimal(10, 4)
-  effectiveFrom DateTime      @default(now())
-  effectiveTo   DateTime?
-  notes         String?
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  name      String? // human label, e.g. "Clearing & inspection"
+  category  CostCategory?
+  rateUnit  CostRateUnit?
+  currency  String
+  amount    Decimal       @db.Decimal(10, 4)
+  notes     String?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
 
   route              Route               @relation(fields: [routeId], references: [id])
   additionalCostType AdditionalCostType? @relation(fields: [additionalCostTypeId], references: [id])
 
+  @@unique([routeId, additionalCostTypeId])
   @@index([routeId])
   @@index([routeId, costType])
   @@index([additionalCostTypeId])
