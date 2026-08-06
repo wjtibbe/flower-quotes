@@ -1,0 +1,88 @@
+import { prisma } from "@/lib/db";
+import ConfirmButton from "@/components/ConfirmButton";
+import { addUser, deleteUser } from "./actions";
+
+export const dynamic = "force-dynamic";
+
+export default async function AccountsPage({ searchParams }: { searchParams: { msg?: string; err?: string } }) {
+  const users = await prisma.user.findMany({ orderBy: { createdAt: "asc" } });
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-semibold text-gray-900">Accountbeheer</h1>
+        <p className="text-sm text-gray-500 mt-1">Medewerkers, accounts en toegangsrechten beheren.</p>
+      </div>
+
+      {searchParams.msg === "deleted" && (
+        <div className="card p-3 bg-green-50 border-green-200 text-sm text-green-800">Gebruiker verwijderd.</div>
+      )}
+      {searchParams.err && (
+        <div className="card p-3 bg-red-50 border-red-200 text-sm text-red-800">{searchParams.err}</div>
+      )}
+
+      <div className="card overflow-x-auto">
+        <table className="table-base">
+          <thead>
+            <tr>
+              <th>Naam</th>
+              <th>E-mail</th>
+              <th>Rol</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {users.map((u) => (
+              <tr key={u.id}>
+                <td className="font-medium">{u.name}</td>
+                <td>{u.email}</td>
+                <td>{u.role}</td>
+                <td>
+                  <form action={deleteUser.bind(null, u.id)}>
+                    <ConfirmButton
+                      message={`Weet je zeker dat je gebruiker "${u.name}" wilt verwijderen? Dit kan niet ongedaan worden gemaakt.`}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Verwijderen
+                    </ConfirmButton>
+                  </form>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="card p-6 max-w-lg">
+        <h2 className="font-semibold text-gray-800 mb-4">Nieuwe medewerker</h2>
+        <form action={addUser} className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label">Naam *</label>
+            <input className="input" name="name" required />
+          </div>
+          <div>
+            <label className="label">E-mailadres *</label>
+            <input className="input" type="email" name="email" required />
+          </div>
+          <div>
+            <label className="label">Wachtwoord *</label>
+            <input className="input" type="password" name="password" required minLength={8} />
+          </div>
+          <div>
+            <label className="label">Rol</label>
+            <select className="input" name="role" defaultValue="SALES">
+              <option value="ADMIN">Admin</option>
+              <option value="SALES">Sales</option>
+              <option value="READ_ONLY">Alleen-lezen</option>
+            </select>
+          </div>
+          <div className="col-span-2">
+            <button className="btn-primary" type="submit">
+              Medewerker toevoegen
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}

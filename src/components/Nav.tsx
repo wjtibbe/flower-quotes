@@ -6,12 +6,13 @@ import { usePathname } from "next/navigation";
 import { signOut } from "next-auth/react";
 import { isNavSection, isNavSectionActive, mostSpecificActiveHref, type NavEntry, type NavSection } from "@/lib/navSections";
 
-// Task 6: Assortiment and Leveranciers each expand into their own
-// Overzicht/toevoegen/bulk sub-pages (Task 3/4); Routes & vracht stays a
-// single flat link since its rebuild (Task 5) keeps everything on one page
-// with in-place expansion, so a second nav-only page would be a fake
-// duplicate route.
-const ENTRIES: NavEntry[] = [
+// Assortiment, Leveranciers and Instellingen each expand into their own
+// sub-pages; Routes & vracht stays a single flat link since everything is
+// managed in-place on that one page, so a second nav-only page would be a
+// fake duplicate route. Instellingen's children are the settings submenu -
+// they only ever appear here, never duplicated inside the settings pages
+// themselves.
+export const ENTRIES: NavEntry[] = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/farm-offers", label: "Leveranciersaanbiedingen" },
   { href: "/quotes", label: "Offertes" },
@@ -33,8 +34,15 @@ const ENTRIES: NavEntry[] = [
   },
   { href: "/routes", label: "Routes & vracht" },
   { href: "/customers", label: "Klanten" },
-  { href: "/exchange-rates", label: "Wisselkoersen" },
-  { href: "/settings", label: "Instellingen" },
+  {
+    label: "Instellingen",
+    children: [
+      { href: "/settings", label: "Algemeen" },
+      { href: "/settings/accounts", label: "Accountbeheer" },
+      { href: "/settings/additional-cost-types", label: "Aanvullende kostensoorten" },
+      { href: "/settings/exchange-rates", label: "Wisselkoersen" },
+    ],
+  },
 ];
 
 export default function Nav({ userName }: { userName: string }) {

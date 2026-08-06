@@ -52,7 +52,7 @@ describe("addAdditionalCostType - case-insensitive uniqueness", () => {
   it("1: creates a new type with its normalized name when no duplicate exists", async () => {
     await expect(
       addAdditionalCostType(formData({ name: "Clearing", category: "CLEARING", defaultUnit: "PER_STEM" })),
-    ).rejects.toThrow("REDIRECT:/settings?msg=costtype-created");
+    ).rejects.toThrow("REDIRECT:/settings/additional-cost-types?msg=costtype-created");
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ name: "Clearing", normalizedName: "clearing" }) }),
     );
@@ -80,7 +80,7 @@ describe("updateAdditionalCostType - rename keeps uniqueness case-insensitive", 
     mockFindUnique.mockResolvedValue({ id: "type-1", name: "Clearing" });
     await expect(
       updateAdditionalCostType("type-1", formData({ name: "Clearing", category: "CLEARING", defaultUnit: "PER_STEM" })),
-    ).rejects.toThrow("REDIRECT:/settings?msg=costtype-updated");
+    ).rejects.toThrow("REDIRECT:/settings/additional-cost-types?msg=costtype-updated");
     expect(mockUpdate).toHaveBeenCalled();
   });
 
@@ -102,7 +102,7 @@ describe("deleteAdditionalCostType - hard delete only when unused", () => {
 
   it("deletes the type when nothing references it", async () => {
     mockDdpCostRateCount.mockResolvedValue(0);
-    await expect(deleteAdditionalCostType("type-1")).rejects.toThrow("REDIRECT:/settings?msg=costtype-deleted");
+    await expect(deleteAdditionalCostType("type-1")).rejects.toThrow("REDIRECT:/settings/additional-cost-types?msg=costtype-deleted");
     expect(mockDelete).toHaveBeenCalledWith({ where: { id: "type-1" } });
   });
 });

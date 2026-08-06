@@ -31,20 +31,20 @@ beforeEach(() => {
 describe("addUser - required field validation (regression: used to throw uncaught, crashing the page with a 500 instead of the friendly /settings?err= banner)", () => {
   it("rejects a missing name via redirect+err instead of throwing", async () => {
     await expect(addUser(formData({ email: "a@b.com", password: "longenough" }))).rejects.toThrow(
-      "REDIRECT:/settings?err=",
+      "REDIRECT:/settings/accounts?err=",
     );
     expect(mockUserCreate).not.toHaveBeenCalled();
   });
 
   it("rejects a missing email via redirect+err instead of throwing", async () => {
     await expect(addUser(formData({ name: "Jan", password: "longenough" }))).rejects.toThrow(
-      "REDIRECT:/settings?err=",
+      "REDIRECT:/settings/accounts?err=",
     );
   });
 
   it("rejects a password shorter than 8 characters via redirect+err instead of throwing", async () => {
     await expect(addUser(formData({ name: "Jan", email: "a@b.com", password: "short" }))).rejects.toThrow(
-      "REDIRECT:/settings?err=",
+      "REDIRECT:/settings/accounts?err=",
     );
     expect(mockUserCreate).not.toHaveBeenCalled();
   });
@@ -59,7 +59,7 @@ describe("addUser - required field validation (regression: used to throw uncaugh
   it("rejects a duplicate email via redirect+err instead of an uncaught database error", async () => {
     mockUserCreate.mockRejectedValue(new Error("Unique constraint failed on the fields: (`email`)"));
     await expect(addUser(formData({ name: "Jan", email: "dup@b.com", password: "longenough" }))).rejects.toThrow(
-      "REDIRECT:/settings?err=",
+      "REDIRECT:/settings/accounts?err=",
     );
   });
 });

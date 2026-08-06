@@ -45,7 +45,7 @@ beforeEach(() => {
 describe("addExchangeRate - EUR is the single base currency", () => {
   it("1: stores the new rate with baseCurrency EUR", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "1.17" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?msg=rate-added",
+      "REDIRECT:/settings/exchange-rates?msg=rate-added",
     );
     expect(mockCreate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -66,32 +66,32 @@ describe("addExchangeRate - EUR is the single base currency", () => {
 
   it("3: rejects EUR as the target currency (via redirect+err, not a raw throw - no error.tsx exists on this route)", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "EUR", rate: "1.17" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
     expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("rejects an unknown currency code", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "GBP", rate: "1.17" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
   });
 
   it("11: rejects a zero rate", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "0" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
   });
 
   it("11: rejects a negative rate", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "-1.17" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
   });
 
   it("rejects a non-numeric rate", async () => {
     await expect(addExchangeRate(formData({ quoteCurrency: "USD", rate: "abc" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
   });
 });
@@ -100,7 +100,7 @@ describe("editExchangeRate - base and target stay fixed", () => {
   it("2: updates only the rate/notes, never the currencies", async () => {
     mockFindUniqueOrThrow.mockResolvedValue({ id: "rate-1", baseCurrency: "EUR", quoteCurrency: "USD" });
     await expect(editExchangeRate("rate-1", formData({ rate: "1.20" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?msg=rate-updated",
+      "REDIRECT:/settings/exchange-rates?msg=rate-updated",
     );
     expect(mockUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ where: { id: "rate-1" }, data: expect.objectContaining({ rate: "1.20" }) }),
@@ -121,7 +121,7 @@ describe("editExchangeRate - base and target stay fixed", () => {
   it("10: defensively rejects editing a legacy row that is not EUR-based (via redirect+err, not a raw throw)", async () => {
     mockFindUniqueOrThrow.mockResolvedValue({ id: "rate-legacy", baseCurrency: "USD", quoteCurrency: "EUR" });
     await expect(editExchangeRate("rate-legacy", formData({ rate: "1.20" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
     expect(mockUpdate).not.toHaveBeenCalled();
   });
@@ -129,7 +129,7 @@ describe("editExchangeRate - base and target stay fixed", () => {
   it("11: rejects a zero/negative rate on edit", async () => {
     mockFindUniqueOrThrow.mockResolvedValue({ id: "rate-1", baseCurrency: "EUR", quoteCurrency: "USD" });
     await expect(editExchangeRate("rate-1", formData({ rate: "0" }))).rejects.toThrow(
-      "REDIRECT:/exchange-rates?err=",
+      "REDIRECT:/settings/exchange-rates?err=",
     );
   });
 });

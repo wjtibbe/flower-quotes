@@ -42,7 +42,7 @@ export async function addExchangeRate(formData: FormData): Promise<void> {
   const rate = String(formData.get("rate") ?? "").trim();
   const notes = (formData.get("notes") as string)?.trim() || null;
   const validationError = validateTargetAndRate(quoteCurrency, rate);
-  if (validationError) redirect(`/exchange-rates?err=${encodeURIComponent(validationError)}`);
+  if (validationError) redirect(`/settings/exchange-rates?err=${encodeURIComponent(validationError)}`);
 
   const updatedById = await currentUserId();
   await prisma.$transaction([
@@ -53,8 +53,8 @@ export async function addExchangeRate(formData: FormData): Promise<void> {
       data: { baseCurrency: BASE_CURRENCY, quoteCurrency: quoteCurrency as Currency, rate, notes, updatedById },
     }),
   ]);
-  revalidatePath("/exchange-rates");
-  redirect("/exchange-rates?msg=rate-added");
+  revalidatePath("/settings/exchange-rates");
+  redirect("/settings/exchange-rates?msg=rate-added");
 }
 
 /**
@@ -67,22 +67,22 @@ export async function editExchangeRate(id: string, formData: FormData): Promise<
   const existing = await prisma.exchangeRate.findUniqueOrThrow({ where: { id } });
   if (existing.baseCurrency !== BASE_CURRENCY) {
     // Defensive: unreachable once the EUR-base data migration has run.
-    redirect(`/exchange-rates?err=${encodeURIComponent("Deze koers is niet EUR-gebaseerd en kan niet via dit formulier worden bewerkt")}`);
+    redirect(`/settings/exchange-rates?err=${encodeURIComponent("Deze koers is niet EUR-gebaseerd en kan niet via dit formulier worden bewerkt")}`);
   }
   const rate = String(formData.get("rate") ?? "").trim();
   const notes = (formData.get("notes") as string)?.trim() || null;
   const validationError = validateTargetAndRate(existing.quoteCurrency, rate);
-  if (validationError) redirect(`/exchange-rates?err=${encodeURIComponent(validationError)}`);
+  if (validationError) redirect(`/settings/exchange-rates?err=${encodeURIComponent(validationError)}`);
 
   const updatedById = await currentUserId();
   await prisma.exchangeRate.update({ where: { id }, data: { rate, notes, updatedById } });
-  revalidatePath("/exchange-rates");
-  redirect("/exchange-rates?msg=rate-updated");
+  revalidatePath("/settings/exchange-rates");
+  redirect("/settings/exchange-rates?msg=rate-updated");
 }
 
 /** Hard-deletes a rate. Safe: quotes snapshot their own rate, never this row. */
 export async function deleteExchangeRate(id: string): Promise<void> {
   await prisma.exchangeRate.delete({ where: { id } });
-  revalidatePath("/exchange-rates");
-  redirect("/exchange-rates?msg=rate-deleted");
+  revalidatePath("/settings/exchange-rates");
+  redirect("/settings/exchange-rates?msg=rate-deleted");
 }
